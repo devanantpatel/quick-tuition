@@ -57,7 +57,12 @@ export function AppProvider({ children }) {
     }
   ]);
 
-  const login = (userData) => setCurrentUser(userData);
+const login = (userData) => {
+    setCurrentUser(userData);
+    // Student login par 'student', Teacher login par 'teacher'
+    setActiveTab(userData.role === 'teacher' ? 'teacher' : 'student');
+  };
+
   const logout = () => {
     setCurrentUser(null);
     setActiveTab('landing');

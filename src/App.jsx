@@ -4,6 +4,8 @@ import Navbar from './components/common/Navbar';
 import Footer from './components/common/Footer';
 import AuthModal from './components/common/AuthModal';
 import LandingPage from './components/landing/LandingPage';
+import TeacherDashboard from './components/teacher/TeacherDashboard';
+import StudentDashboard from './components/student/StudentDashboard';
 
 export default function App() {
   const { activeTab, currentUser } = useApp();
@@ -14,18 +16,16 @@ export default function App() {
         <Navbar />
         <AuthModal />
 
-        {/* Active View */}
-        {(!currentUser || activeTab === 'landing') && <LandingPage />}
-
-        {currentUser?.role === 'teacher' && activeTab !== 'landing' && (
-          <div className="p-8 text-center text-slate-400">Teacher Dashboard Component Ready to Connect</div>
-        )}
-        {currentUser?.role === 'student' && activeTab !== 'landing' && (
-          <div className="p-8 text-center text-slate-400">Student Dashboard Component Ready to Connect</div>
+        {/* View Router */}
+        {!currentUser ? (
+          <LandingPage />
+        ) : currentUser.role === 'teacher' ? (
+          <TeacherDashboard />
+        ) : (
+          <StudentDashboard />
         )}
       </div>
 
-      {/* Developer Footer */}
       <Footer />
     </div>
   );
