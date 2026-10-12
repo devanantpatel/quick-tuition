@@ -17,6 +17,10 @@ export function AppProvider({ children }) {
       title: 'Mathematics (Calculus & Vectors)',
       rate: 5,
       freeMins: 10,
+      tutorName: 'Anant Patel',
+      tutorExp: '3+ yrs exp • IIT JEE Specialist',
+      tutorRating: '4.9',
+      isOnline: true,
       chapters: [
         {
           id: 101,
@@ -35,6 +39,10 @@ export function AppProvider({ children }) {
       title: 'Full-Stack Web Development',
       rate: 8,
       freeMins: 10,
+      tutorName: 'Rahul Sharma',
+      tutorExp: 'Senior Frontend Dev • React/Node',
+      tutorRating: '4.8',
+      isOnline: true,
       chapters: [
         {
           id: 201,
