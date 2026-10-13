@@ -1,186 +1,220 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { 
+  getProfile, 
+  upsertProfile, 
+  fetchAllSubjects, 
+  createSubject, 
+  createBooking, 
+  fetchUserBookings, 
+  updateBookingStatus 
+} from '../lib/db';
 
 const AppContext = createContext();
 
-// Pre-seeded accounts for testing
-const SEED_USERS = [
-  {
-    id: 'u_teacher_1',
-    name: 'Anant Patel',
-    email: 'anant@tutor.com',
-    role: 'teacher',
-    phone: '7607765685',
-    bio: 'Maths & Full-Stack Mentor',
-    headline: 'IIT JEE & React Specialist (3+ yrs exp)'
-  },
-  {
-    id: 'u_student_1',
-    name: 'Rahul Verma',
-    email: 'rahul@student.com',
-    role: 'student',
-    phone: '9876543210',
-    bio: 'Class 12th PCM Student',
-    headline: 'Preparing for JEE Main'
-  }
-];
-
 export function AppProvider({ children }) {
-  // 1. Session Persistence: Check localStorage on load
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('qt_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  const [activeTab, setActiveTab] = useState(() => {
-    try {
-      const saved = localStorage.getItem('qt_user');
-      if (saved) {
-        const u = JSON.parse(saved);
-        return u.role === 'teacher' ? 'teacher' : 'student';
-      }
-    } catch {}
-    return 'landing';
-  });
-
+  const [currentUser, setCurrentUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('landing');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authDefaultRole, setAuthDefaultRole] = useState('student');
-
-  // Teacher Online State
   const [isTeacherOnline, setIsTeacherOnline] = useState(true);
 
-  // User Accounts Database (Saved in localStorage)
-  const [registeredUsers, setRegisteredUsers] = useState(() => {
-    try {
-      const saved = localStorage.getItem('qt_users_db');
-      return saved ? JSON.parse(saved) : SEED_USERS;
-    } catch {
-      return SEED_USERS;
-    }
-  });
+  // Database Data States
+  const [teacherSubjects, setTeacherSubjects] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Global Courses/Subjects
-  const [teacherSubjects, setTeacherSubjects] = useState([
-    {
-      id: 1,
-      title: 'Mathematics (Calculus & Vectors)',
-      rate: 5,
-      freeMins: 10,
-      tutorName: 'Anant Patel',
-      tutorExp: '3+ yrs exp • IIT JEE Specialist',
-      tutorRating: '4.9',
-      isOnline: true,
-      chapters: [
-        {
-          id: 101,
-          name: 'Differential Equations',
-          topics: ['First Order ODE', 'Homogeneous Equations', 'Separation of Variables']
-        },
-        {
-          id: 102,
-          name: 'Linear Algebra',
-          topics: ['Matrices & Determinants', 'Eigenvalues & Vectors']
-        }
-      ]
-    },
-    {
-      id: 2,
-      title: 'Full-Stack Web Development',
-      rate: 8,
-      freeMins: 10,
-      tutorName: 'Rahul Sharma',
-      tutorExp: 'Senior Frontend Dev • React/Node',
-      tutorRating: '4.8',
-      isOnline: true,
-      chapters: [
-        {
-          id: 201,
-          name: 'React.js State Architecture',
-          topics: ['Hooks Lifecycle (useEffect/useMemo)', 'Zustand & Context API', 'Custom Hooks']
-        }
-      ]
-    }
-  ]);
-
-  // Session Requests State
-  const [requests, setRequests] = useState([
-    {
-      id: 1,
-      studentName: 'Rahul Verma',
-      subject: 'Mathematics (Calculus & Vectors)',
-      topic: 'First Order ODE',
-      time: '06:00 PM - 07:00 PM',
-      status: 'pending'
-    }
-  ]);
-
-  // Sync users to storage
+  // 1. Check Active Session on Mount
   useEffect(() => {
-    localStorage.setItem('qt_users_db', JSON.stringify(registeredUsers));
-  }, [registeredUsers]);
-
-  // Login handler
-  const login = (userData) => {
-    setCurrentUser(userData);
-    localStorage.setItem('qt_user', JSON.stringify(userData));
-    setActiveTab(userData.role === 'teacher' ? 'teacher' : 'student');
-    setIsAuthModalOpen(false);
-  };
-
-  // Register handler
-  const register = (newUserData) => {
-    const user = {
-      id: 'u_' + Date.now(),
-      ...newUserData
+    const initializeAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const profile = await getProfile(session.user.id);
+          if (profile) {
+            setCurrentUser(profile);
+            setActiveTab(profile.role === 'teacher' ? 'teacher' : 'student');
+          }
+        }
+      } catch (err) {
+        console.error('Auth initialization error:', err);
+      } finally {
+        setIsLoading(false);
+      }
     };
-    setRegisteredUsers((prev) => [...prev, user]);
-    login(user);
+
+    initializeAuth();
+
+    // Listen for Auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        const profile = await getProfile(session.user.id);
+        if (profile) {
+          setCurrentUser(profile);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  // 2. Fetch Catalog Subjects
+  const loadSubjects = async () => {
+    const data = await fetchAllSubjects();
+    if (data && data.length > 0) {
+      // Normalize subject format for the UI
+      const formatted = data.map((sub) => ({
+        id: sub.id,
+        title: sub.title,
+        rate: Number(sub.rate) || 5,
+        freeMins: sub.free_mins || 10,
+        tutorName: sub.profiles?.name || 'Tutor',
+        tutorExp: sub.profiles?.headline || 'Verified Mentor',
+        tutorRating: '4.9',
+        isOnline: sub.profiles?.is_online ?? true,
+        chapters: sub.chapters || []
+      }));
+      setTeacherSubjects(formatted);
+    }
   };
 
-  // Logout handler
-  const logout = () => {
+  useEffect(() => {
+    loadSubjects();
+  }, []);
+
+  // 3. Load Bookings for Active User & Listen for Realtime Changes
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const loadBookings = async () => {
+      const bookings = await fetchUserBookings(currentUser.id, currentUser.role);
+      setRequests(bookings);
+    };
+
+    loadBookings();
+
+    // Realtime Postgres Change Listener for Instant Booking Notification
+    const bookingChannel = supabase
+      .channel('public:session_bookings')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'session_bookings' },
+        () => {
+          loadBookings(); // Automatically refresh bookings on insert/update
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(bookingChannel);
+    };
+  }, [currentUser]);
+
+  // Auth Operations
+  const loginUser = async (email, password) => {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) throw error;
+    
+    const profile = await getProfile(data.user.id);
+    setCurrentUser(profile);
+    setActiveTab(profile.role === 'teacher' ? 'teacher' : 'student');
+    setIsAuthModalOpen(false);
+    return profile;
+  };
+
+  const registerUser = async ({ email, password, name, role, headline }) => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+    if (error) throw error;
+    if (!data.user) throw new Error('Registration failed');
+
+    // Create profile row in Postgres
+    const profileData = {
+      id: data.user.id,
+      name,
+      email,
+      role,
+      headline: headline || (role === 'teacher' ? 'Verified Mentor' : 'Student Learner'),
+      is_online: true
+    };
+
+    const savedProfile = await upsertProfile(profileData);
+    setCurrentUser(savedProfile);
+    setActiveTab(role === 'teacher' ? 'teacher' : 'student');
+    setIsAuthModalOpen(false);
+    return savedProfile;
+  };
+
+  const logoutUser = async () => {
+    await supabase.auth.signOut();
     setCurrentUser(null);
-    localStorage.removeItem('qt_user');
     setActiveTab('landing');
   };
 
-  // Open modal with pre-selected role
-  const openAuthModal = (role = 'student') => {
-    setAuthDefaultRole(role);
-    setIsAuthModalOpen(true);
+  // Add Subject (Teacher)
+  const addSubject = async (newSub) => {
+    if (!currentUser) return;
+    const inserted = await createSubject({
+      teacher_id: currentUser.id,
+      title: newSub.title,
+      rate: newSub.rate,
+      free_mins: newSub.freeMins || 10,
+      chapters: newSub.chapters || []
+    });
+    await loadSubjects();
+    return inserted;
   };
 
-  const addSubject = (newSub) => {
-    setTeacherSubjects((prev) => [...prev, newSub]);
+  // Book a Session (Student)
+  const addRequest = async (newReq) => {
+    if (!currentUser) return;
+    const inserted = await createBooking({
+      student_id: currentUser.id,
+      teacher_id: newReq.teacherId || currentUser.id, // Fallback to current tutor ID
+      subject_title: newReq.subject,
+      topic: newReq.topic,
+      slot_time: newReq.time,
+      status: 'pending'
+    });
+    return inserted;
   };
 
-  const addRequest = (newReq) => {
-    setRequests((prev) => [newReq, ...prev]);
-  };
-
-  const updateRequestStatus = (id, status) => {
+  // Accept/Reject Booking (Teacher)
+  const updateStatus = async (id, status) => {
+    await updateBookingStatus(id, status);
     setRequests((prev) =>
       prev.map((r) => (r.id === id ? { ...r, status } : r))
     );
+  };
+
+  const openAuthModal = (role = 'student') => {
+    setAuthDefaultRole(role);
+    setIsAuthModalOpen(true);
   };
 
   return (
     <AppContext.Provider
       value={{
         currentUser,
+        isLoading,
         activeTab,
         setActiveTab,
         isAuthModalOpen,
         setIsAuthModalOpen,
         authDefaultRole,
         openAuthModal,
-        registeredUsers,
-        login,
-        register,
-        logout,
+        login: loginUser,
+        register: registerUser,
+        logout: logoutUser,
         isTeacherOnline,
         setIsTeacherOnline,
         teacherSubjects,
@@ -188,7 +222,8 @@ export function AppProvider({ children }) {
         addSubject,
         requests,
         addRequest,
-        updateRequestStatus
+        updateRequestStatus: updateStatus,
+        loadSubjects
       }}
     >
       {children}

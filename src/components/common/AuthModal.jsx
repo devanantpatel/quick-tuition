@@ -33,45 +33,36 @@ export default function AuthModal() {
 
   if (!isAuthModalOpen) return null;
 
-  const handleSubmit = (e) => {
+const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+    setIsSubmitting(true);
 
-    if (mode === 'signin') {
-      // Find user by email and role
-      const found = registeredUsers.find(
-        (u) => u.email.toLowerCase() === email.trim().toLowerCase() && u.role === role
-      );
-
-      if (found) {
-        login(found);
+    try {
+      if (mode === 'signin') {
+        await login(email.trim(), password);
       } else {
-        // Fallback: create on the fly if user enters password
-        if (email && password) {
-          login({
-            id: 'u_' + Date.now(),
-            name: email.split('@')[0],
-            email,
-            role,
-            headline: role === 'teacher' ? 'Independent Tutor' : 'Student Learner'
-          });
-        } else {
-          setErrorMsg('Invalid email or password.');
+        if (!name.trim() || !email.trim() || !password) {
+          setErrorMsg('Please fill in all mandatory fields.');
+          setIsSubmitting(false);
+          return;
         }
-      }
-    } else {
-      // Registration flow
-      if (!name.trim() || !email.trim() || !password) {
-        setErrorMsg('Please fill in all mandatory fields.');
-        return;
-      }
 
-      register({
-        name: name.trim(),
-        email: email.trim(),
-        role,
-        headline: headline.trim() || (role === 'teacher' ? 'Verified Mentor' : 'Student Learner')
-      });
+        await register({
+          name: name.trim(),
+          email: email.trim(),
+          password,
+          role,
+          headline: headline.trim()
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      setErrorMsg(err.message || 'Authentication failed. Please verify credentials.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -242,13 +233,20 @@ export default function AuthModal() {
             </div>
           )}
 
-          <button
-            type="submit"
-            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 mt-2"
-          >
-            <span>{mode === 'signin' ? `Sign In as ${role === 'teacher' ? 'Tutor' : 'Student'}` : 'Complete Registration'}</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
+         <button
+    type="submit"
+    disabled={isSubmitting}
+    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 mt-2"
+  >
+    <span>
+      {isSubmitting 
+        ? 'Processing...' 
+        : mode === 'signin' 
+          ? `Sign In as ${role === 'teacher' ? 'Tutor' : 'Student'}` 
+          : 'Complete Registration'}
+    </span>
+    <ArrowRight className="w-4 h-4" />
+  </button>
         </form>
 
         {/* 3. Footer Switcher */}
