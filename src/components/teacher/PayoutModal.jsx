@@ -1,5 +1,5 @@
-import React from 'react';
-import { QrCode, CreditCard, Upload } from 'lucide-react';
+import React, { useState } from 'react';
+import { QrCode, CreditCard, Upload, Loader2 } from 'lucide-react';
 
 export default function PayoutModal({ 
   isOpen, 
@@ -11,9 +11,32 @@ export default function PayoutModal({
   qrCodeUrl, 
   onQrUpload, 
   bankDetails, 
-  setBankDetails 
+  setBankDetails,
+  onSave // Database save callback from parent
 }) {
+  const [isSaving, setIsSaving] = useState(false);
+
   if (!isOpen) return null;
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      if (onSave) {
+        await onSave({
+          payoutMethod,
+          upiId,
+          qrCodeUrl,
+          bankDetails
+        });
+      }
+      onClose();
+    } catch (err) {
+      console.error('Payout save error:', err);
+      alert('Failed to save payout settings: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -121,13 +144,18 @@ export default function PayoutModal({
         )}
 
         <button 
-          onClick={() => {
-            alert('Payout preferences saved successfully!');
-            onClose();
-          }}
-          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition text-xs shadow-lg shadow-indigo-600/20"
+          disabled={isSaving}
+          onClick={handleSave}
+          className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition text-xs shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2"
         >
-          Save Payout Settings
+          {isSaving ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Saving to Database...</span>
+            </>
+          ) : (
+            <span>Save Payout Settings</span>
+          )}
         </button>
       </div>
     </div>

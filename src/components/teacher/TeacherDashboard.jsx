@@ -1,6 +1,18 @@
-import React, { useState } from 'react';
-import { PlusCircle, BookOpen, Calendar, UserCheck, History } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { BookOpen, Calendar, UserCheck, History, Bell, CheckCircle, XCircle, X } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { 
+  fetchTeacherSubjects, 
+  createSubject, 
+  fetchTeacherSchedules, 
+  addTeacherScheduleSlot, 
+  updateTeacherScheduleSlot,
+  deleteTeacherScheduleSlot, 
+  updateTeacherPayoutDetails, 
+  updateTeacherOnlineStatus,
+  getProfile,
+  fetchUserBookings
+} from '../../lib/db';
 
 import TeacherMetrics from './TeacherMetrics';
 import CourseManager from './CourseManager';
@@ -10,85 +22,322 @@ import SessionHistory from './SessionHistory';
 import PayoutModal from './PayoutModal';
 import AddSubjectModal from './AddSubjectModal';
 
+// 1. Default Demo Course Card (local draft until published)
+const DEFAULT_DEMO_COURSE = {
+  id: 'demo-1',
+  title: 'Mathematics (Calculus & Vectors)',
+  rate: 5,
+  freeMins: 10,
+  isPublished: false,
+  isDemo: true,
+  chapters: [
+    {
+      id: 101,
+      name: 'Differential Equations',
+      topics: ['First Order ODE', 'Homogeneous Equations']
+    }
+  ]
+};
+
+// 2. Default Example Slot
+const DEFAULT_EXAMPLE_SLOT = {
+  id: 'slot-demo-1',
+  days: ['Mon', 'Wed', 'Fri'],
+  startTime: '18:00',
+  endTime: '19:00',
+  isActive: true,
+  isDemo: true
+};
+
 export default function TeacherDashboard() {
   const { 
+    currentUser,
     isTeacherOnline, 
     setIsTeacherOnline, 
-    requests, 
+    requests = [], 
     updateRequestStatus, 
     setActiveTab 
   } = useApp();
 
+  const teacherId = currentUser?.id;
+
   const [dashboardTab, setDashboardTab] = useState('courses');
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [showAddSubjectModal, setShowAddSubjectModal] = useState(false);
+  const [showRequestsModal, setShowRequestsModal] = useState(false);
 
-  // Courses State
-  const [courses, setCourses] = useState([
-    {
-      id: 1,
-      title: 'Mathematics (Calculus & Vectors)',
-      rate: 5,
-      freeMins: 10,
-      isPublished: true,
-      chapters: [
-        {
-          id: 101,
-          name: 'Differential Equations',
-          topics: ['First Order ODE', 'Homogeneous Equations']
-        }
-      ]
-    },
-    {
-      id: 2,
-      title: 'Full-Stack Web Development',
-      rate: 8,
-      freeMins: 10,
-      isPublished: true,
-      chapters: [
-        {
-          id: 201,
-          name: 'React.js State Architecture',
-          topics: ['Hooks Lifecycle (useEffect)', 'Zustand & Context API']
-        }
-      ]
-    }
-  ]);
+  // Courses & Schedule State
+  const [courses, setCourses] = useState([DEFAULT_DEMO_COURSE]);
+  const [timeSlots, setTimeSlots] = useState([DEFAULT_EXAMPLE_SLOT]);
 
-  // Schedule State
-  const [timeSlots, setTimeSlots] = useState([
-    { id: 1, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], startTime: '17:00', endTime: '19:00', isActive: true },
-    { id: 2, days: ['Sat', 'Sun'], startTime: '20:30', endTime: '22:30', isActive: true }
-  ]);
-
-  // History State
-  const [history] = useState([
-    {
-      id: 1,
-      studentName: 'Aman Sharma',
-      subject: 'Mathematics',
-      topic: 'Integration by Parts',
-      duration: '35 mins',
-      earned: '₹125.00',
-      date: 'Yesterday'
-    }
-  ]);
+  // Real History & Metrics State (Default 0 & Empty)
+  const [history, setHistory] = useState([]);
+  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [taughtMinutes, setTaughtMinutes] = useState(0);
 
   // Payout States
   const [payoutMethod, setPayoutMethod] = useState('upi');
-  const [upiId, setUpiId] = useState('anant@okaxis');
+  const [upiId, setUpiId] = useState('');
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [bankDetails, setBankDetails] = useState({
-    accountName: 'Anant Patel',
-    accountNumber: '••••••••1245',
-    ifsc: 'HDFC0001234'
+    accountName: '',
+    accountNumber: '',
+    ifsc: ''
   });
 
-  const handleQrUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) setQrCodeUrl(URL.createObjectURL(file));
+  // --- Initial Sync from Supabase ---
+  useEffect(() => {
+    if (!teacherId) return;
+
+    const loadTeacherData = async () => {
+      try {
+        const [dbSubjects, dbSchedules, dbProfile, dbBookings] = await Promise.all([
+          fetchTeacherSubjects(teacherId),
+          fetchTeacherSchedules(teacherId),
+          getProfile(teacherId),
+          fetchUserBookings(teacherId, 'teacher')
+        ]);
+
+        // 1. Subjects
+        if (dbSubjects && dbSubjects.length > 0) {
+          const mappedCourses = dbSubjects.map(s => ({
+            id: s.id,
+            title: s.title,
+            rate: s.rate ?? 5,
+            freeMins: s.free_mins ?? 10,
+            isPublished: s.is_published ?? true,
+            isDemo: false,
+            chapters: Array.isArray(s.chapters) ? s.chapters : []
+          }));
+          setCourses(mappedCourses);
+        }
+
+        // 2. Schedules
+        if (dbSchedules && dbSchedules.length > 0) {
+          const mappedSlots = dbSchedules.map(sc => ({
+            id: sc.id,
+            days: Array.isArray(sc.days) ? sc.days : (sc.day_of_week ? [sc.day_of_week] : ['Mon']),
+            startTime: sc.start_time || '10:00',
+            endTime: sc.end_time || '11:00',
+            isActive: sc.is_active ?? true,
+            isDemo: false
+          }));
+          setTimeSlots(mappedSlots);
+        }
+
+        // 3. Profile & Payout
+        if (dbProfile) {
+  if (dbProfile.upi_id) setUpiId(dbProfile.upi_id);
+  if (dbProfile.qr_code_url) setQrCodeUrl(dbProfile.qr_code_url); // <--- Add this line
+  if (dbProfile.bank_holder_name || dbProfile.bank_account_no) {
+    setBankDetails({
+      accountName: dbProfile.bank_holder_name || '',
+      accountNumber: dbProfile.bank_account_no || '',
+      ifsc: dbProfile.bank_ifsc || ''
+    });
+  }
+  if (dbProfile.is_online !== undefined) {
+    setIsTeacherOnline(dbProfile.is_online);
+  }
+}
+
+        // 4. Real Completed Sessions & Earnings Calculation
+        if (dbBookings && dbBookings.length > 0) {
+          const completed = dbBookings.filter(b => b.status === 'completed');
+          
+          let sumEarned = 0;
+          let sumMins = 0;
+
+          const mappedHistory = completed.map(item => {
+            const mins = item.duration_mins || 0;
+            const amt = item.total_amount || 0;
+            sumMins += mins;
+            sumEarned += amt;
+
+            return {
+              id: item.id,
+              studentName: item.student_name || 'Student',
+              subject: item.subject_title || 'Session',
+              topic: item.topic || 'Doubt Clearing',
+              duration: `${mins} mins`,
+              earned: `₹${amt.toFixed(2)}`,
+              date: item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Recent'
+            };
+          });
+
+          setHistory(mappedHistory);
+          setTotalEarnings(sumEarned);
+          setTaughtMinutes(sumMins);
+        } else {
+          setHistory([]);
+          setTotalEarnings(0);
+          setTaughtMinutes(0);
+        }
+
+      } catch (err) {
+        console.error('Error fetching teacher data:', err);
+      }
+    };
+
+    loadTeacherData();
+  }, [teacherId, setIsTeacherOnline]);
+
+  // Online Status Toggle
+  const handleToggleOnlineStatus = async () => {
+    const nextStatus = !isTeacherOnline;
+    setIsTeacherOnline(nextStatus);
+    if (teacherId) {
+      try {
+        await updateTeacherOnlineStatus(teacherId, nextStatus);
+      } catch (err) {
+        console.error('Failed to update online status:', err);
+      }
+    }
   };
 
+  // Add Subject from Modal (Direct Supabase Create)
+  const handleAddSubjectToDb = async (newSub) => {
+    if (!teacherId) {
+      setCourses(prev => [...prev, { ...newSub, id: Date.now() }]);
+      return;
+    }
+
+    try {
+      const created = await createSubject({
+        teacher_id: teacherId,
+        title: newSub.title,
+        rate: newSub.rate,
+        free_mins: newSub.freeMins || 10,
+        is_published: true,
+        chapters: newSub.chapters || []
+      });
+
+      setCourses(prev => [
+        ...prev.filter(c => c.id !== 'demo-1'),
+        {
+          id: created.id,
+          title: created.title,
+          rate: created.rate,
+          freeMins: created.free_mins,
+          isPublished: created.is_published,
+          isDemo: false,
+          chapters: created.chapters || []
+        }
+      ]);
+    } catch (err) {
+      console.error('Error creating subject in Supabase:', err);
+      alert('Subject save failed: ' + err.message);
+    }
+  };
+
+  // Time Slot Handlers
+  const handleAddSlotToDb = async (slotData) => {
+    if (!teacherId) {
+      setTimeSlots(prev => [...prev, { id: Date.now(), ...slotData }]);
+      return;
+    }
+
+    try {
+      const created = await addTeacherScheduleSlot({
+        teacher_id: teacherId,
+        day_of_week: slotData.days[0] || 'Monday',
+        start_time: slotData.startTime,
+        end_time: slotData.endTime,
+        is_active: slotData.isActive ?? true
+      });
+
+      setTimeSlots(prev => [
+        ...prev.filter(s => s.id !== 'slot-demo-1'),
+        {
+          id: created.id,
+          days: slotData.days,
+          startTime: slotData.startTime,
+          endTime: slotData.endTime,
+          isActive: slotData.isActive,
+          isDemo: false
+        }
+      ]);
+    } catch (err) {
+      console.error('Error adding slot:', err);
+      alert('Slot save failed: ' + err.message);
+    }
+  };
+
+  const handleUpdateSlotInDb = async (slotId, slotData) => {
+    if (!teacherId || String(slotId).startsWith('slot-demo-')) return;
+    try {
+      await updateTeacherScheduleSlot(slotId, slotData);
+    } catch (err) {
+      console.error('Error updating slot in DB:', err);
+      throw err;
+    }
+  };
+
+  const handleToggleSlotInDb = async (slotId, nextActiveStatus) => {
+    const slot = timeSlots.find(s => s.id === slotId);
+    if (!slot) return;
+
+    setTimeSlots(prev => prev.map(s => s.id === slotId ? { ...s, isActive: nextActiveStatus } : s));
+
+    if (teacherId && !String(slotId).startsWith('slot-demo-')) {
+      try {
+        await updateTeacherScheduleSlot(slotId, {
+          days: slot.days,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          isActive: nextActiveStatus
+        });
+      } catch (err) {
+        console.error('Error toggling slot active status:', err);
+      }
+    }
+  };
+
+  const handleDeleteSlotFromDb = async (slotId) => {
+    try {
+      if (!String(slotId).startsWith('slot-demo-')) {
+        await deleteTeacherScheduleSlot(slotId);
+      }
+      setTimeSlots(prev => prev.filter(s => s.id !== slotId));
+    } catch (err) {
+      console.error('Error deleting slot:', err);
+    }
+  };
+
+  // Payout Save
+  const handleSavePayoutToDb = async (payoutPayload) => {
+    if (!teacherId) return;
+    try {
+      await updateTeacherPayoutDetails(teacherId, {
+        payoutMethod: payoutPayload.payoutMethod,
+        upiId: payoutPayload.upiId,
+        bankDetails: payoutPayload.bankDetails,
+        qrCodeUrl: payoutPayload.qrCodeUrl
+      });
+    } catch (err) {
+      console.error('Error saving payout:', err);
+      throw err;
+    }
+  };
+
+  const handleQrUpload = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // File size check (under 1.5MB recommended for direct base64)
+  if (file.size > 2 * 1024 * 1024) {
+    alert('Please upload an image smaller than 2MB');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    // reader.result ek permanent data:image/... base64 string hai
+    setQrCodeUrl(reader.result);
+  };
+  reader.readAsDataURL(file);
+};
+  const pendingRequests = requests.filter(r => r.status === 'pending');
   const confirmedRequests = requests.filter(r => r.status === 'accepted');
 
   return (
@@ -103,9 +352,23 @@ export default function TeacherDashboard() {
           <p className="text-slate-400 text-xs md:text-sm">Manage curriculum, slots, rates, payouts & incoming requests.</p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        {/* Status + Requests Button Group */}
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button 
-            onClick={() => setIsTeacherOnline(!isTeacherOnline)}
+            onClick={() => setShowRequestsModal(true)}
+            className="relative bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition"
+          >
+            <Bell className="w-4 h-4 text-amber-400" />
+            <span>Requests</span>
+            {pendingRequests.length > 0 && (
+              <span className="bg-amber-500 text-slate-950 font-bold px-1.5 py-0.2 rounded-full text-[10px]">
+                {pendingRequests.length}
+              </span>
+            )}
+          </button>
+
+          <button 
+            onClick={handleToggleOnlineStatus}
             className={`text-xs font-semibold px-4 py-2.5 rounded-xl border flex items-center gap-2 transition ${
               isTeacherOnline ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-400'
             }`}
@@ -113,60 +376,77 @@ export default function TeacherDashboard() {
             <span className={`w-2 h-2 rounded-full ${isTeacherOnline ? 'bg-emerald-400' : 'bg-slate-500'}`}></span>
             {isTeacherOnline ? 'Status: Online' : 'Status: Offline'}
           </button>
-
-          <button 
-            onClick={() => setShowAddSubjectModal(true)}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-indigo-600/25 transition"
-          >
-            <PlusCircle className="w-4 h-4" /> Add Subject
-          </button>
         </div>
       </div>
 
-      {/* Top Metrics Component */}
+      {/* Top Metrics Component - Real Dynamic Values */}
       <TeacherMetrics 
-        coursesCount={courses.filter(c => c.isPublished).length}
-        pendingCount={requests.filter(r => r.status === 'pending').length}
+        taughtMinutes={taughtMinutes}
+        totalEarnings={totalEarnings}
         payoutMethod={payoutMethod}
         onOpenPayout={() => setShowPayoutModal(true)}
       />
 
-      {/* Tab Navigation */}
+      {/* Tab Navigation with Bubble Counters */}
       <div className="flex gap-2 border-b border-slate-800 pb-2 text-xs font-semibold overflow-x-auto">
         <button
           onClick={() => setDashboardTab('courses')}
-          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
             dashboardTab === 'courses' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
           }`}
         >
-          <BookOpen className="w-4 h-4" /> Courses & Curriculum
+          <BookOpen className="w-4 h-4" />
+          <span>Courses & Curriculum</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            dashboardTab === 'courses' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>
+            {courses.length}
+          </span>
         </button>
 
         <button
           onClick={() => setDashboardTab('schedule')}
-          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
             dashboardTab === 'schedule' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
           }`}
         >
-          <Calendar className="w-4 h-4" /> Teaching Slots & Timing ({timeSlots.length})
+          <Calendar className="w-4 h-4" />
+          <span>Teaching Slots & Timing</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            dashboardTab === 'schedule' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>
+            {timeSlots.length}
+          </span>
         </button>
 
         <button
           onClick={() => setDashboardTab('confirmed')}
-          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
             dashboardTab === 'confirmed' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
           }`}
         >
-          <UserCheck className="w-4 h-4" /> Confirmed Sessions ({confirmedRequests.length})
+          <UserCheck className="w-4 h-4" />
+          <span>Confirmed Sessions</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            dashboardTab === 'confirmed' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>
+            {confirmedRequests.length}
+          </span>
         </button>
 
         <button
           onClick={() => setDashboardTab('history')}
-          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
             dashboardTab === 'history' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
           }`}
         >
-          <History className="w-4 h-4" /> Session History
+          <History className="w-4 h-4" />
+          <span>Session History</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            dashboardTab === 'history' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>
+            {history.length}
+          </span>
         </button>
       </div>
 
@@ -175,9 +455,8 @@ export default function TeacherDashboard() {
         <CourseManager 
           courses={courses}
           setCourses={setCourses}
-          requests={requests}
-          onAcceptRequest={(id) => updateRequestStatus(id, 'accepted')}
-          onDeclineRequest={(id) => updateRequestStatus(id, 'declined')}
+          teacherId={teacherId}
+          onOpenAddModal={() => setShowAddSubjectModal(true)}
         />
       )}
 
@@ -185,6 +464,10 @@ export default function TeacherDashboard() {
         <ScheduleManager 
           timeSlots={timeSlots}
           setTimeSlots={setTimeSlots}
+          onAddSlot={handleAddSlotToDb}
+          onUpdateSlot={handleUpdateSlotInDb}
+          onToggleSlot={handleToggleSlotInDb}
+          onDeleteSlot={handleDeleteSlotFromDb}
         />
       )}
 
@@ -199,7 +482,70 @@ export default function TeacherDashboard() {
         <SessionHistory history={history} />
       )}
 
-      {/* Modals */}
+      {/* Requests Modal */}
+      {showRequestsModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-2xl p-6 shadow-2xl relative space-y-4">
+            <button 
+              onClick={() => setShowRequestsModal(false)} 
+              className="absolute top-4 right-4 text-slate-500 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Bell className="w-5 h-5 text-amber-400" />
+                <span>Pending Student Requests</span>
+              </h3>
+              <p className="text-xs text-slate-400">Accept to launch immediate 1-on-1 tutoring sessions.</p>
+            </div>
+
+            <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+              {pendingRequests.length === 0 ? (
+                <div className="p-8 rounded-xl bg-slate-950 border border-slate-800 text-center text-slate-500 text-xs">
+                  No new pending requests right now.
+                </div>
+              ) : (
+                pendingRequests.map((req) => (
+                  <div key={req.id} className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-white text-sm">{req.studentName}</span>
+                      <span className="text-[11px] text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                        {req.time}
+                      </span>
+                    </div>
+                    <div className="text-xs bg-slate-900 p-2.5 rounded-lg border border-slate-800 space-y-0.5">
+                      <div className="text-slate-400">{req.subject}</div>
+                      <div className="text-slate-200 font-medium">{req.topic}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => {
+                          updateRequestStatus(req.id, 'accepted');
+                          setShowRequestsModal(false);
+                          setDashboardTab('confirmed');
+                        }} 
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1 transition shadow"
+                      >
+                        <CheckCircle className="w-3.5 h-3.5" /> Accept
+                      </button>
+                      <button 
+                        onClick={() => updateRequestStatus(req.id, 'declined')} 
+                        className="flex-1 bg-slate-800 hover:bg-rose-900/30 text-slate-300 hover:text-rose-400 text-xs font-semibold py-2 rounded-xl border border-slate-700 flex items-center justify-center gap-1 transition"
+                      >
+                        <XCircle className="w-3.5 h-3.5" /> Decline
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payout Modal */}
       <PayoutModal 
         isOpen={showPayoutModal}
         onClose={() => setShowPayoutModal(false)}
@@ -211,12 +557,14 @@ export default function TeacherDashboard() {
         onQrUpload={handleQrUpload}
         bankDetails={bankDetails}
         setBankDetails={setBankDetails}
+        onSave={handleSavePayoutToDb}
       />
 
+      {/* Add Subject Modal */}
       <AddSubjectModal 
         isOpen={showAddSubjectModal}
         onClose={() => setShowAddSubjectModal(false)}
-        onAddSubject={(newSub) => setCourses([...courses, newSub])}
+        onAddSubject={handleAddSubjectToDb}
       />
     </main>
   );
