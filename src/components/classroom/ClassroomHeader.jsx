@@ -60,9 +60,9 @@ export default function ClassroomHeader({ subjectTitle, ratePerMin = 5, onEndSes
         )}
       </div>
 
-      {/* End Session Button */}
+      {/* Leave Room Button - passes secondsElapsed */}
       <button
-        onClick={onEndSession}
+        onClick={() => onEndSession(secondsElapsed)}
         className="bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 text-xs font-semibold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition"
       >
         <LogOut className="w-3.5 h-3.5" />
