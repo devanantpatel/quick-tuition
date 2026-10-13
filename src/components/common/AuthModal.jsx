@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   X, Mail, Lock, User, GraduationCap, BookOpen, 
-  ArrowRight, ShieldCheck, Zap 
+  ArrowRight, Zap 
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -10,20 +10,20 @@ export default function AuthModal() {
     isAuthModalOpen, 
     setIsAuthModalOpen, 
     authDefaultRole, 
-    registeredUsers, 
+    registeredUsers = [], 
     login, 
     register 
   } = useApp();
 
+  // All Hooks MUST be at the very top (never after an early return)
   const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
   const [role, setRole] = useState('student'); // 'student' | 'teacher'
-
-  // Form fields
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [headline, setHeadline] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (authDefaultRole) {
@@ -31,9 +31,8 @@ export default function AuthModal() {
     }
   }, [authDefaultRole, isAuthModalOpen]);
 
+  // Early return ONLY after ALL hooks have been declared
   if (!isAuthModalOpen) return null;
-
-const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -66,7 +65,6 @@ const [isSubmitting, setIsSubmitting] = useState(false);
     }
   };
 
-  // Quick 1-click Demo Fill
   const fillDemoAccount = (demoRole) => {
     setErrorMsg('');
     setRole(demoRole);
@@ -110,7 +108,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
           </p>
         </div>
 
-        {/* 1. Role Selector Toggle */}
+        {/* Role Selector Toggle */}
         <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 text-xs font-semibold">
           <button
             type="button"
@@ -169,7 +167,7 @@ const [isSubmitting, setIsSubmitting] = useState(false);
           </div>
         )}
 
-        {/* 2. Main Form */}
+        {/* Main Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
           {mode === 'signup' && (
             <div>
@@ -233,23 +231,23 @@ const [isSubmitting, setIsSubmitting] = useState(false);
             </div>
           )}
 
-         <button
-    type="submit"
-    disabled={isSubmitting}
-    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 mt-2"
-  >
-    <span>
-      {isSubmitting 
-        ? 'Processing...' 
-        : mode === 'signin' 
-          ? `Sign In as ${role === 'teacher' ? 'Tutor' : 'Student'}` 
-          : 'Complete Registration'}
-    </span>
-    <ArrowRight className="w-4 h-4" />
-  </button>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-600/25 flex items-center justify-center gap-2 mt-2"
+          >
+            <span>
+              {isSubmitting 
+                ? 'Processing...' 
+                : mode === 'signin' 
+                  ? `Sign In as ${role === 'teacher' ? 'Tutor' : 'Student'}` 
+                  : 'Complete Registration'}
+            </span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
         </form>
 
-        {/* 3. Footer Switcher */}
+        {/* Footer */}
         <div className="text-center pt-2 border-t border-slate-800/80 text-xs text-slate-400">
           {mode === 'signin' ? (
             <p>
