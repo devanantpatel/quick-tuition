@@ -29,7 +29,7 @@ export async function updateTeacherPayoutDetails(userId, payoutDetails) {
       bank_account_no: payoutDetails.bankDetails?.accountNumber || payoutDetails.accountNo,
       bank_ifsc: payoutDetails.bankDetails?.ifsc || payoutDetails.ifsc,
       bank_holder_name: payoutDetails.bankDetails?.accountName || payoutDetails.holderName,
-      qr_code_url: payoutDetails.qrCodeUrl, // <--- QR code URL save hoga
+      qr_code_url: payoutDetails.qrCodeUrl,
     })
     .eq('id', userId)
     .select()
@@ -144,25 +144,38 @@ export async function deleteTeacherScheduleSlot(slotId) {
   return true;
 }
 
-// --- Bookings ---
+// --- Bookings CRUD ---
 export async function createBooking(bookingData) {
+  const payload = {
+    ...bookingData,
+    // Dono column names provide kar rahe hain taaki DB me jo bhi column ho, null na jaye
+    start_time: bookingData.start_time || bookingData.slot_time || 'Flexible Timing',
+    slot_time: bookingData.slot_time || bookingData.start_time || 'Flexible Timing'
+  };
+
   const { data, error } = await supabase
     .from('session_bookings')
-    .insert(bookingData)
+    .insert(payload)
     .select()
     .single();
+
   if (error) throw error;
   return data;
 }
 
 export async function fetchUserBookings(userId, role) {
-  const query = supabase.from('session_bookings').select('*');
+  let query = supabase.from('session_bookings').select('*');
   if (role === 'teacher') {
-    query.eq('teacher_id', userId);
+    query = query.eq('teacher_id', userId);
   } else {
-    query.eq('student_id', userId);
+    query = query.eq('student_id', userId);
   }
-  const { data, error } = await query.order('created_at', { ascending: false });
+  
+  // Cancelled records ko active list se filter out karein
+  const { data, error } = await query
+    .neq('status', 'cancelled')
+    .order('created_at', { ascending: false });
+
   if (error) console.error('fetchBookings error:', error);
   return data || [];
 }
@@ -178,7 +191,26 @@ export async function updateBookingStatus(bookingId, status) {
   return data;
 }
 
-// --- Invoices & Ratings ---
+export async function cancelOrDeleteBooking(bookingId) {
+  const { data, error } = await supabase
+    .from('session_bookings')
+    .update({ status: 'cancelled' })
+    .eq('id', bookingId)
+    .select()
+    .single();
+
+  if (error) {
+    const { error: delError } = await supabase
+      .from('session_bookings')
+      .delete()
+      .eq('id', bookingId);
+    if (delError) throw delError;
+    return true;
+  }
+  return data;
+}
+
+// --- Invoices ---
 export async function saveSessionInvoice(invoiceData) {
   const { data, error } = await supabase
     .from('session_invoices')
