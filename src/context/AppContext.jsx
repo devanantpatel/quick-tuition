@@ -1,16 +1,68 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const AppContext = createContext();
 
-export function AppProvider({ children }) {
-  // Navigation & Auth
-  const [activeTab, setActiveTab] = useState('landing'); // 'landing' | 'classroom'
-  const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState('login');
-  const [currentUser, setCurrentUser] = useState(null);
+// Pre-seeded accounts for testing
+const SEED_USERS = [
+  {
+    id: 'u_teacher_1',
+    name: 'Anant Patel',
+    email: 'anant@tutor.com',
+    role: 'teacher',
+    phone: '7607765685',
+    bio: 'Maths & Full-Stack Mentor',
+    headline: 'IIT JEE & React Specialist (3+ yrs exp)'
+  },
+  {
+    id: 'u_student_1',
+    name: 'Rahul Verma',
+    email: 'rahul@student.com',
+    role: 'student',
+    phone: '9876543210',
+    bio: 'Class 12th PCM Student',
+    headline: 'Preparing for JEE Main'
+  }
+];
 
-  // Teacher State
+export function AppProvider({ children }) {
+  // 1. Session Persistence: Check localStorage on load
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('qt_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem('qt_user');
+      if (saved) {
+        const u = JSON.parse(saved);
+        return u.role === 'teacher' ? 'teacher' : 'student';
+      }
+    } catch {}
+    return 'landing';
+  });
+
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authDefaultRole, setAuthDefaultRole] = useState('student');
+
+  // Teacher Online State
   const [isTeacherOnline, setIsTeacherOnline] = useState(true);
+
+  // User Accounts Database (Saved in localStorage)
+  const [registeredUsers, setRegisteredUsers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('qt_users_db');
+      return saved ? JSON.parse(saved) : SEED_USERS;
+    } catch {
+      return SEED_USERS;
+    }
+  });
+
+  // Global Courses/Subjects
   const [teacherSubjects, setTeacherSubjects] = useState([
     {
       id: 1,
@@ -53,31 +105,56 @@ export function AppProvider({ children }) {
     }
   ]);
 
-  // Requests State
+  // Session Requests State
   const [requests, setRequests] = useState([
     {
-      id: 101,
+      id: 1,
       studentName: 'Rahul Verma',
-      subject: 'Full-Stack Web Development',
-      topic: 'React useEffect infinite loop bug (Custom Doubt)',
-      time: 'Today, 6:30 PM',
+      subject: 'Mathematics (Calculus & Vectors)',
+      topic: 'First Order ODE',
+      time: '06:00 PM - 07:00 PM',
       status: 'pending'
     }
   ]);
 
-const login = (userData) => {
+  // Sync users to storage
+  useEffect(() => {
+    localStorage.setItem('qt_users_db', JSON.stringify(registeredUsers));
+  }, [registeredUsers]);
+
+  // Login handler
+  const login = (userData) => {
     setCurrentUser(userData);
-    // Student login par 'student', Teacher login par 'teacher'
+    localStorage.setItem('qt_user', JSON.stringify(userData));
     setActiveTab(userData.role === 'teacher' ? 'teacher' : 'student');
+    setIsAuthModalOpen(false);
   };
 
+  // Register handler
+  const register = (newUserData) => {
+    const user = {
+      id: 'u_' + Date.now(),
+      ...newUserData
+    };
+    setRegisteredUsers((prev) => [...prev, user]);
+    login(user);
+  };
+
+  // Logout handler
   const logout = () => {
     setCurrentUser(null);
+    localStorage.removeItem('qt_user');
     setActiveTab('landing');
   };
 
-  const addSubject = (newSubject) => {
-    setTeacherSubjects((prev) => [...prev, newSubject]);
+  // Open modal with pre-selected role
+  const openAuthModal = (role = 'student') => {
+    setAuthDefaultRole(role);
+    setIsAuthModalOpen(true);
+  };
+
+  const addSubject = (newSub) => {
+    setTeacherSubjects((prev) => [...prev, newSub]);
   };
 
   const addRequest = (newReq) => {
@@ -93,22 +170,25 @@ const login = (userData) => {
   return (
     <AppContext.Provider
       value={{
+        currentUser,
         activeTab,
         setActiveTab,
-        authModalOpen,
-        setAuthModalOpen,
-        authMode,
-        setAuthMode,
-        currentUser,
+        isAuthModalOpen,
+        setIsAuthModalOpen,
+        authDefaultRole,
+        openAuthModal,
+        registeredUsers,
         login,
+        register,
         logout,
         isTeacherOnline,
         setIsTeacherOnline,
         teacherSubjects,
+        setTeacherSubjects,
         addSubject,
         requests,
         addRequest,
-        updateRequestStatus,
+        updateRequestStatus
       }}
     >
       {children}
@@ -116,4 +196,6 @@ const login = (userData) => {
   );
 }
 
-export const useApp = () => useContext(AppContext);
+export function useApp() {
+  return useContext(AppContext);
+}
