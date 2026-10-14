@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
+import { supabase } from '../../lib/supabase';
 import { fetchAllSubjects, createBooking, fetchUserBookings, cancelOrDeleteBooking } from '../../lib/db';
 import TutorCard from './TutorCard';
 import BookingModal from './BookingModal';
@@ -7,9 +8,9 @@ import {
   Search, Users, Filter, BookOpen, Clock, Video, 
   CheckCircle2, AlertCircle, Sparkles, X, ChevronDown, 
   History, Wifi, WifiOff, Loader2, RefreshCw, ChevronUp,
-  Calendar, Trash2
+  Calendar, Trash2, Download, Eye
 } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+
 export default function StudentDashboard() {
   const { currentUser, startClassroomSession, cancelBooking } = useApp();
   const studentId = currentUser?.id;
@@ -68,15 +69,20 @@ export default function StudentDashboard() {
         setCourses([]);
       }
 
-      // 2. Process Bookings (Exclude Cancelled)
+      // 2. Process Bookings (Exclude Destroyed from active requests)
       if (dbBookings && dbBookings.length > 0) {
-        const activeList = dbBookings.filter(b => b.status === 'pending' || b.status === 'accepted' || b.status === 'declined');
+        const activeList = dbBookings.filter(b => 
+          (b.status === 'pending' || b.status === 'accepted') && 
+          b.room_status !== 'destroyed'
+        );
+
         const mappedActive = activeList.map(b => ({
           id: b.id,
           subject: b.subject_title || 'Session Request',
           topic: b.topic || 'General Doubt',
           time: b.start_time || b.slot_time || 'Flexible Timing',
           status: b.status,
+          room_status: b.room_status || 'closed',
           teacherName: b.teacher_name || 'Assigned Educator',
           teacherId: b.teacher_id,
           rate: b.rate || 5,
@@ -85,7 +91,8 @@ export default function StudentDashboard() {
         }));
         setRequestsList(mappedActive);
 
-        const completedList = dbBookings.filter(b => b.status === 'completed');
+        // Completed & Destroyed sessions go to Learning History
+        const completedList = dbBookings.filter(b => b.status === 'completed' || b.room_status === 'destroyed');
         const mappedCompleted = completedList.map(b => ({
           id: b.id,
           subject: b.subject_title || 'Session',
@@ -93,7 +100,9 @@ export default function StudentDashboard() {
           duration: b.duration_mins ? `${b.duration_mins} mins` : 'Completed',
           date: b.created_at ? new Date(b.created_at).toLocaleDateString() : 'Recent',
           teacherName: b.teacher_name || 'Educator',
-          amountPaid: b.total_amount ? `₹${b.total_amount}` : '₹0 (Free Trial)'
+          amountPaid: b.total_amount ? `₹${b.total_amount}` : '₹0 (Free Trial)',
+          whiteboardNotes: b.whiteboard_notes || null,
+          codeNotes: b.code_notes || null
         }));
         setPreviousLearnings(mappedCompleted);
       } else {
@@ -109,33 +118,31 @@ export default function StudentDashboard() {
     }
   }, [studentId]);
 
- useEffect(() => {
-  if (!studentId) return;
+  useEffect(() => {
+    if (!studentId) return;
+    loadDashboardData();
 
-  // Pehli baar data load hoga
-  loadDashboardData();
+    // Realtime Supabase Listener
+    const channel = supabase
+      .channel(`student_bookings_${studentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'session_bookings',
+          filter: `student_id=eq.${studentId}`
+        },
+        () => {
+          loadDashboardData();
+        }
+      )
+      .subscribe();
 
-  // Supabase Realtime Listener (Bina Sync button dabaye live update hoga)
-  const channel = supabase
-    .channel(`student_bookings_${studentId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'session_bookings',
-        filter: `student_id=eq.${studentId}`
-      },
-      () => {
-        loadDashboardData(); // Jaise hi teacher accept karega, auto-reload hoga
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [studentId, loadDashboardData]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [studentId, loadDashboardData]);
 
   // Unique Teachers List
   const uniqueTeachersMap = new Map();
@@ -167,13 +174,13 @@ export default function StudentDashboard() {
     return matchesSearch && matchesTeacher && matchesOnline && matchesFree;
   });
 
-  // Anti-Duplicate Booking Confirmation
+  // Confirm Booking
   const handleConfirmBooking = async (bookingData) => {
     if (isBookingInProgress.current) return;
     isBookingInProgress.current = true;
 
     try {
-      const created = await createBooking({
+      await createBooking({
         student_id: studentId,
         teacher_id: selectedCourseForBooking?.teacherId,
         subject_title: bookingData.subject || selectedCourseForBooking?.title,
@@ -183,30 +190,16 @@ export default function StudentDashboard() {
         status: 'pending'
       });
 
-      const newCard = {
-        id: created?.id || Date.now(),
-        subject: bookingData.subject || selectedCourseForBooking?.title,
-        topic: bookingData.topic,
-        time: bookingData.time,
-        status: 'pending',
-        teacherName: selectedCourseForBooking?.teacherName || 'Assigned Educator',
-        teacherId: selectedCourseForBooking?.teacherId,
-        rate: selectedCourseForBooking?.rate || 5,
-        createdAt: 'Just now',
-        date: 'Today'
-      };
-
-      setRequestsList(prev => [newCard, ...prev]);
       setSelectedCourseForBooking(null);
+      loadDashboardData();
     } catch (err) {
-      console.error('Failed to create booking:', err);
       alert('Failed to send booking: ' + err.message);
     } finally {
       isBookingInProgress.current = false;
     }
   };
 
-  // Permanent Cancel Logic (Works for Pending, Declined, AND Accepted)
+  // Cancel Request
   const handleCancelRequest = async (requestId) => {
     setRequestsList(prev => prev.filter(r => r.id !== requestId));
     try {
@@ -216,18 +209,17 @@ export default function StudentDashboard() {
         await cancelOrDeleteBooking(requestId);
       }
     } catch (err) {
-      console.error('Failed to cancel request in DB:', err);
+      console.error('Failed to cancel request:', err);
     }
   };
 
-  // Direct dynamic room launcher
   const handleJoinClassroom = (booking) => {
     if (startClassroomSession) {
       startClassroomSession(booking);
     }
   };
 
-  const selectedTeacherObj = availableTeachers.find(t => t.id === selectedTeacherId);
+  const activeLiveRoom = requestsList.find(r => r.status === 'accepted' && r.room_status === 'active');
 
   return (
     <main className="flex-1 max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6 w-full">
@@ -241,7 +233,7 @@ export default function StudentDashboard() {
             </span>
           </h2>
           <p className="text-slate-400 text-xs mt-0.5">
-            Book instant 1-on-1 sessions, track request responses, and browse verified mentors.
+            Book 1-on-1 sessions, track active live rooms, and download session study notes.
           </p>
         </div>
 
@@ -249,31 +241,41 @@ export default function StudentDashboard() {
           onClick={() => loadDashboardData(true)}
           disabled={isRefreshing}
           className="self-start sm:self-auto bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition shadow-sm"
-          title="Sync latest requests and teacher statuses from database"
         >
           <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshing ? 'animate-spin' : ''}`} />
           <span>{isRefreshing ? 'Syncing...' : 'Sync Live Updates'}</span>
         </button>
       </div>
-{/* ONGOING SESSION PERSISTENT REJOIN BANNER */}
-{requestsList.some(r => r.status === 'accepted') && (
-  <div className="p-3.5 bg-gradient-to-r from-emerald-950/80 via-indigo-950/60 to-slate-900 border border-emerald-500/50 rounded-2xl flex items-center justify-between shadow-xl animate-pulse">
-    <div className="flex items-center gap-2.5">
-      <span className="w-3 h-3 rounded-full bg-emerald-400" />
-      <div>
-        <h4 className="text-white text-xs font-bold">Classroom Session in Progress!</h4>
-        <p className="text-slate-400 text-[11px]">Your 1-on-1 session is live. Click to jump back in.</p>
-      </div>
-    </div>
-    <button
-      onClick={() => handleJoinClassroom(requestsList.find(r => r.status === 'accepted'))}
-      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition"
-    >
-      Rejoin Classroom Now
-    </button>
-  </div>
-)}
-      {/* 2. Top Section (Scrollable & Collapsible) */}
+
+      {/* TOP PERSISTENT ACTIVE ROOM BANNER */}
+      {activeLiveRoom && (
+        <div className="p-4 bg-gradient-to-r from-emerald-950/90 via-slate-900 to-indigo-950/80 border border-emerald-500/50 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xl animate-pulse">
+          <div className="flex items-center gap-3">
+            <span className="w-3 h-3 rounded-full bg-emerald-400" />
+            <div>
+              <h4 className="text-white text-sm font-bold flex items-center gap-2">
+                <span>Your Live Classroom is Ready!</span>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  {activeLiveRoom.subject}
+                </span>
+              </h4>
+              <p className="text-slate-400 text-xs mt-0.5">
+                Mentor {activeLiveRoom.teacherName} has created your live room. Click below to join now.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => handleJoinClassroom(activeLiveRoom)}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg transition flex items-center justify-center gap-2 shrink-0"
+          >
+            <Video className="w-4 h-4" />
+            <span>Join / Rejoin Classroom</span>
+          </button>
+        </div>
+      )}
+
+      {/* 2. Top Section (Requests & History) */}
       <div className="p-4 md:p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3.5 shadow-lg">
         <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
           <div className="flex items-center gap-2">
@@ -303,7 +305,7 @@ export default function StudentDashboard() {
               }`}
             >
               <History className="w-3.5 h-3.5" />
-              <span>Previous Learning</span>
+              <span>Previous Learning & Notes</span>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                 topSectionView === 'history' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
               }`}>
@@ -330,93 +332,99 @@ export default function StudentDashboard() {
                 </div>
               ) : (
                 <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {requestsList.map((r) => (
-                    <div 
-                      key={r.id} 
-                      className={`p-3.5 rounded-xl bg-slate-950 border transition flex flex-col justify-between space-y-3 ${
-                        r.status === 'accepted' ? 'border-emerald-500/50 ring-1 ring-emerald-500/30' : 'border-slate-800'
-                      }`}
-                    >
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border flex items-center gap-1 ${
-                            r.status === 'accepted' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                            r.status === 'declined' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' :
-                            'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                          }`}>
-                            {r.status === 'accepted' && <CheckCircle2 className="w-3 h-3" />}
-                            {r.status === 'pending' && <Clock className="w-3 h-3 animate-spin" />}
-                            {r.status === 'declined' && <AlertCircle className="w-3 h-3" />}
-                            <span>{r.status}</span>
-                          </span>
+                  {requestsList.map((r) => {
+                    const isRoomReady = r.status === 'accepted' && r.room_status === 'active';
+                    const isPreparing = r.status === 'accepted' && r.room_status !== 'active';
 
-                          <span className="text-[10px] text-slate-500 font-mono">{r.createdAt}</span>
-                        </div>
-
-                        <div>
-                          <h4 className="text-white font-bold text-xs">{r.subject}</h4>
-                          <span className="text-[11px] text-indigo-300 block font-medium">
-                            👨‍🏫 {r.teacherName}
-                          </span>
-                        </div>
-
-                        <div className="p-2 rounded-lg bg-slate-900 border border-slate-800/80 text-[11px] text-slate-300">
-                          <span className="text-slate-500 text-[10px] block">Specific Doubt:</span>
-                          <span className="line-clamp-2">{r.topic}</span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
-                          <Calendar className="w-3 h-3 text-slate-500" />
-                          <span>{r.time}</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5 pt-2 border-t border-slate-900">
-                        {r.status === 'accepted' ? (
-                          <div className="space-y-1.5">
-                            <button
-  onClick={() => handleJoinClassroom(r)}
-  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
->
-  <Video className="w-3.5 h-3.5" />
-  <span>Join / Rejoin Classroom</span>
-</button>
-
-                            <button
-                              onClick={() => handleCancelRequest(r.id)}
-                              className="w-full text-center text-[10px] text-slate-500 hover:text-rose-400 py-1 flex items-center justify-center gap-1 transition"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>Cancel & Remove Session</span>
-                            </button>
-                          </div>
-                        ) : r.status === 'declined' ? (
-                          <div className="flex items-center justify-between pt-1">
-                            <span className="text-[10px] text-rose-400">Educator unavailable</span>
-                            <button
-                              onClick={() => handleCancelRequest(r.id)}
-                              className="text-[10px] text-slate-400 hover:text-white underline"
-                            >
-                              Dismiss
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between pt-1 border-t border-slate-900">
-                            <span className="text-[10px] text-amber-400/90 flex items-center gap-1">
-                              Waiting tutor confirmation...
+                    return (
+                      <div 
+                        key={r.id} 
+                        className={`p-3.5 rounded-xl bg-slate-950 border transition flex flex-col justify-between space-y-3 ${
+                          isRoomReady ? 'border-emerald-500/60 ring-1 ring-emerald-500/30' : 'border-slate-800'
+                        }`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border flex items-center gap-1 ${
+                              isRoomReady ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                              isPreparing ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20' :
+                              'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            }`}>
+                              {isRoomReady && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                              {isPreparing && <Clock className="w-3 h-3 text-indigo-400" />}
+                              {r.status === 'pending' && <Clock className="w-3 h-3 animate-spin text-amber-400" />}
+                              <span>{isRoomReady ? 'Room Active' : isPreparing ? 'Accepted (Preparing)' : 'Pending'}</span>
                             </span>
-                            <button
-                              onClick={() => handleCancelRequest(r.id)}
-                              className="text-[10px] text-slate-500 hover:text-rose-400"
-                              title="Cancel this request"
-                            >
-                              Cancel
-                            </button>
+
+                            <span className="text-[10px] text-slate-500 font-mono">{r.createdAt}</span>
                           </div>
-                        )}
+
+                          <div>
+                            <h4 className="text-white font-bold text-xs">{r.subject}</h4>
+                            <span className="text-[11px] text-indigo-300 block font-medium">
+                              👨‍🏫 {r.teacherName}
+                            </span>
+                          </div>
+
+                          <div className="p-2 rounded-lg bg-slate-900 border border-slate-800/80 text-[11px] text-slate-300">
+                            <span className="text-slate-500 text-[10px] block">Specific Doubt:</span>
+                            <span className="line-clamp-2">{r.topic}</span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
+                            <Calendar className="w-3 h-3 text-slate-500" />
+                            <span>{r.time}</span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5 pt-2 border-t border-slate-900">
+                          {isRoomReady ? (
+                            <div className="space-y-1.5">
+                              <button
+                                onClick={() => handleJoinClassroom(r)}
+                                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
+                              >
+                                <Video className="w-3.5 h-3.5" />
+                                <span>Join / Rejoin Room</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleCancelRequest(r.id)}
+                                className="w-full text-center text-[10px] text-slate-500 hover:text-rose-400 py-1 flex items-center justify-center gap-1 transition"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Cancel & Remove</span>
+                              </button>
+                            </div>
+                          ) : isPreparing ? (
+                            <div className="space-y-1.5 text-center">
+                              <div className="p-2 bg-indigo-950/40 border border-indigo-500/20 rounded-lg text-[11px] text-indigo-300">
+                                ⏳ Mentor is creating your live room...
+                              </div>
+                              <button
+                                onClick={() => handleCancelRequest(r.id)}
+                                className="text-[10px] text-slate-500 hover:text-rose-400 underline"
+                              >
+                                Cancel Request
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between pt-1 border-t border-slate-900">
+                              <span className="text-[10px] text-amber-400/90 flex items-center gap-1">
+                                Waiting tutor confirmation...
+                              </span>
+                              <button
+                                onClick={() => handleCancelRequest(r.id)}
+                                className="text-[10px] text-slate-500 hover:text-rose-400"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )
             )}
@@ -429,7 +437,7 @@ export default function StudentDashboard() {
               ) : (
                 <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {previousLearnings.map((item) => (
-                    <div key={item.id} className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                    <div key={item.id} className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
                       <div className="flex justify-between items-center">
                         <span className="font-bold text-white text-xs truncate">{item.subject}</span>
                         <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
@@ -441,6 +449,23 @@ export default function StudentDashboard() {
                         <span>Mentor: {item.teacherName}</span>
                         <span>{item.date}</span>
                       </div>
+
+                      {/* Download Notes Action if available */}
+                      {(item.whiteboardNotes || item.codeNotes) && (
+                        <div className="flex gap-2 pt-1 border-t border-slate-900">
+                          {item.whiteboardNotes && (
+                            <button
+                              onClick={() => {
+                                const w = window.open('');
+                                w.document.write(`<img src="${item.whiteboardNotes}" style="max-width:100%"/>`);
+                              }}
+                              className="flex-1 bg-slate-900 hover:bg-slate-800 text-indigo-300 text-[10px] font-medium py-1.5 rounded-lg border border-slate-800 flex items-center justify-center gap-1 transition"
+                            >
+                              <Eye className="w-3 h-3" /> Notes
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -450,7 +475,7 @@ export default function StudentDashboard() {
         )}
       </div>
 
-      {/* 3. Search & Dual Filter Bar */}
+      {/* 3. Search & Filters Bar */}
       <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow-md">
         <div className="grid md:grid-cols-12 gap-3 items-center">
           <div className="md:col-span-7 relative">
@@ -536,24 +561,6 @@ export default function StudentDashboard() {
         </div>
       </div>
 
-      {/* Selected Teacher Banner */}
-      {selectedTeacherId !== 'ALL' && selectedTeacherObj && (
-        <div className="p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-xl flex items-center justify-between text-xs text-indigo-200">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${selectedTeacherObj.isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-            <span>
-              Showing all subject offerings curated by <strong className="text-white">{selectedTeacherObj.name}</strong>
-            </span>
-          </div>
-          <button 
-            onClick={() => setSelectedTeacherId('ALL')}
-            className="text-slate-400 hover:text-white underline text-[11px]"
-          >
-            Show all educators
-          </button>
-        </div>
-      )}
-
       {/* 4. Courses Grid */}
       <div className="space-y-4">
         <div className="flex justify-between items-center">
@@ -573,19 +580,8 @@ export default function StudentDashboard() {
             <Filter className="w-8 h-8 text-slate-600 mx-auto" />
             <h4 className="text-white font-semibold text-sm">No Courses Found</h4>
             <p className="text-slate-400 text-xs max-w-sm mx-auto">
-              No subjects matched your selected combination. Try clearing your search query or selecting a different educator.
+              No subjects matched your selected combination.
             </p>
-            <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedTeacherId('ALL');
-                setOnlyOnlineTeachers(false);
-                setOnlyFree(false);
-              }}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition shadow"
-            >
-              Reset Filters
-            </button>
           </div>
         ) : (
           <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">

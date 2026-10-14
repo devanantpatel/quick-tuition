@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { PenTool, Code, MessageSquare, Wifi, WifiOff, Columns } from 'lucide-react';
+import { PenTool, Code, MessageSquare, Wifi, WifiOff, Columns, Presentation } from 'lucide-react';
 import ClassroomHeader from './ClassroomHeader';
 import Whiteboard from './Whiteboard';
 import CodePlayground from './CodePlayground';
+import PresentationViewer from './PresentationViewer';
 import SideDock from './SideDock';
 import SessionReceiptModal from './SessionReceiptModal';
 import { useApp } from '../../context/AppContext';
@@ -19,16 +20,12 @@ export default function LiveClassroom() {
   const ratePerMin = activeSession?.rate ?? 5;
   const tutorName = activeSession?.teacherName || activeSession?.teacher_name || 'Verified Educator';
 
-  // Workspace View: 'board' | 'code' | 'split' | 'chat'
+  // Workspace View: 'board' | 'code' | 'presentation' | 'split' | 'chat'
   const [workspaceMode, setWorkspaceMode] = useState('board');
 
   // Master Permissions
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
-
-  // Call Mode State: 'custom' (in-app WebRTC) | 'meet' (Google Meet)
-  const [callMode, setCallMode] = useState('custom');
-  const [googleMeetUrl, setGoogleMeetUrl] = useState('');
 
   // Receipt Modal State
   const [showReceipt, setShowReceipt] = useState(false);
@@ -54,13 +51,6 @@ export default function LiveClassroom() {
         setWorkspaceMode(data.mode);
       }
     });
-
-    registerListener('call:mode_changed', (data) => {
-      if (data?.mode) {
-        setCallMode(data.mode);
-        if (data.meetUrl) setGoogleMeetUrl(data.meetUrl);
-      }
-    });
   }, [isTeacher, registerListener]);
 
   const updatePermissions = (boardAllowed, codeAllowed) => {
@@ -77,15 +67,6 @@ export default function LiveClassroom() {
     if (isTeacher) {
       broadcast('host:view_mode', { mode });
     }
-  };
-
-  const handleToggleCallMode = (newMode, newMeetUrl = '') => {
-    setCallMode(newMode);
-    if (newMeetUrl) setGoogleMeetUrl(newMeetUrl);
-    broadcast('call:mode_changed', {
-      mode: newMode,
-      meetUrl: newMeetUrl || googleMeetUrl,
-    });
   };
 
   const handleEndSession = (elapsedSec = 0) => {
@@ -127,21 +108,14 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* 2. Main Simultaneous Workspace (Persistent Mounting Fix) */}
+      {/* 2. Main Persistent Simultaneous Workspace */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0">
         
         <div className={`flex-1 flex flex-col h-full overflow-hidden relative min-h-0 ${
           workspaceMode === 'chat' ? 'hidden lg:flex' : 'flex'
         }`}>
 
-          {/* SPLIT VIEW */}
-          <div className={`h-full w-full divide-y md:divide-y-0 md:divide-x divide-slate-800 min-h-0 overflow-hidden ${
-            workspaceMode === 'split' ? 'grid grid-cols-1 md:grid-cols-2' : 'hidden'
-          }`}>
-            {/* Split instances can be styled or shared */}
-          </div>
-
-          {/* PERSISTENT WHITEBOARD CONTAINER (Never unmounts, never clears!) */}
+          {/* PERSISTENT WHITEBOARD */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'board' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -153,7 +127,7 @@ export default function LiveClassroom() {
             />
           </div>
 
-          {/* PERSISTENT CODE PLAYGROUND CONTAINER (Never unmounts, never clears!) */}
+          {/* PERSISTENT CODE PLAYGROUND */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'code' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -165,9 +139,20 @@ export default function LiveClassroom() {
             />
           </div>
 
+          {/* PERSISTENT PRESENTATION & ANNOTATION VIEWER */}
+          <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
+            workspaceMode === 'presentation' ? 'flex flex-1' : 'hidden'
+          }`}>
+            <PresentationViewer 
+              broadcast={broadcast}
+              registerListener={registerListener}
+              isTeacher={isTeacher}
+            />
+          </div>
+
         </div>
 
-        {/* 3. SideDock with Live 2-Way Video Call & Google Meet Switcher */}
+        {/* 3. SideDock with Video Call & Chat */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
           workspaceMode === 'chat' ? 'flex' : 'hidden lg:flex'
         }`}>
@@ -176,10 +161,7 @@ export default function LiveClassroom() {
             broadcast={broadcast}
             registerListener={registerListener}
             peersInRoom={peersInRoom}
-            callMode={callMode}
-            googleMeetUrl={googleMeetUrl}
             isTeacher={isTeacher}
-            onToggleCallMode={handleToggleCallMode}
             currentUser={currentUser}
           />
         </div>
@@ -208,11 +190,20 @@ export default function LiveClassroom() {
         </button>
 
         <button
+          onClick={() => handleModeChange('presentation')}
+          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Presentation className="w-3.5 h-3.5" />
+          <span>PPT / PDF Presentation</span>
+        </button>
+
+        <button
           onClick={() => handleModeChange('split')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
             workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
-          title="Simultaneous side-by-side Whiteboard & Code"
         >
           <Columns className="w-3.5 h-3.5" />
           <span>Split Screen</span>
@@ -223,32 +214,42 @@ export default function LiveClassroom() {
       <nav className="lg:hidden bg-slate-900 border-t border-slate-800 px-3 py-2 flex items-center justify-around z-30 shrink-0">
         <button
           onClick={() => setWorkspaceMode('board')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-3 py-1 rounded-xl ${
+          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
             workspaceMode === 'board' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'
           }`}
         >
           <PenTool className="w-4 h-4" />
-          <span>Whiteboard</span>
+          <span>Board</span>
         </button>
 
         <button
           onClick={() => setWorkspaceMode('code')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-3 py-1 rounded-xl ${
+          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
             workspaceMode === 'code' ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400'
           }`}
         >
           <Code className="w-4 h-4" />
-          <span>Code Editor</span>
+          <span>Code</span>
+        </button>
+
+        <button
+          onClick={() => setWorkspaceMode('presentation')}
+          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
+            workspaceMode === 'presentation' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'
+          }`}
+        >
+          <Presentation className="w-4 h-4" />
+          <span>Slides</span>
         </button>
 
         <button
           onClick={() => setWorkspaceMode('chat')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-3 py-1 rounded-xl ${
+          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
             workspaceMode === 'chat' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'
           }`}
         >
           <MessageSquare className="w-4 h-4" />
-          <span>Video & Chat</span>
+          <span>Call</span>
         </button>
       </nav>
 

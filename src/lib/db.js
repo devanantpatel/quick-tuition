@@ -233,3 +233,87 @@ export async function saveSessionInvoice(invoiceData) {
   }
   return data;
 }
+// --- Room Lifecycle & Notes Helpers ---
+
+// 1. Teacher creates/activates live room
+export async function activateBookingRoom(bookingId) {
+  const { data, error } = await supabase
+    .from('session_bookings')
+    .update({
+      room_status: 'active',
+      room_created_at: new Date().toISOString()
+    })
+    .eq('id', bookingId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('activateBookingRoom error:', error);
+    throw error;
+  }
+  return data;
+}
+
+// 2. Teacher ends/destroys room
+export async function destroyBookingRoom(bookingId) {
+  const { data, error } = await supabase
+    .from('session_bookings')
+    .update({
+      room_status: 'destroyed',
+      room_destroyed_at: new Date().toISOString()
+    })
+    .eq('id', bookingId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('destroyBookingRoom error:', error);
+    throw error;
+  }
+  return data;
+}
+
+// 3. Save Whiteboard & Code Notes to session record
+export async function saveSessionNotes(bookingId, { whiteboardNotes, codeNotes }) {
+  const { data, error } = await supabase
+    .from('session_bookings')
+    .update({
+      whiteboard_notes: whiteboardNotes || null,
+      code_notes: codeNotes || null
+    })
+    .eq('id', bookingId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('saveSessionNotes error:', error);
+    throw error;
+  }
+  return data;
+}
+
+// 4. Update Payment Status & Send Reminder
+export async function updateSessionPaymentStatus(bookingId, status) {
+  const { data, error } = await supabase
+    .from('session_bookings')
+    .update({ payment_status: status })
+    .eq('id', bookingId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function sendPaymentReminder(bookingId) {
+  const { data, error } = await supabase
+    .from('session_invoices')
+    .update({ reminder_sent_at: new Date().toISOString() })
+    .eq('booking_id', bookingId)
+    .select();
+
+  if (error) {
+    console.error('sendPaymentReminder error:', error);
+  }
+  return data;
+}

@@ -1,25 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, ShieldCheck, LogOut, IndianRupee, AlertCircle, Users, Video } from 'lucide-react';
+import { Clock, ShieldCheck, LogOut, IndianRupee, AlertCircle, PauseCircle } from 'lucide-react';
 
 export default function ClassroomHeader({ 
   subjectTitle, 
   ratePerMin = 5, 
   onEndSession,
   peersInRoom = [],
-  currentUserRole = 'student',
-  onSwitchToGoogleMeet
+  currentUserRole = 'student'
 }) {
   const [secondsElapsed, setSecondsElapsed] = useState(0);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setSecondsElapsed((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // Both presence check: Teacher AND Student dono hone chahiye
+  const otherRole = currentUserRole === 'teacher' ? 'student' : 'teacher';
+  const isPeerOnline = peersInRoom.some((p) => p.role === otherRole);
+  const isBothConnected = isPeerOnline; // Jab samne wala connected hai tabhi count hoga
 
-  const freeSeconds = 10 * 60;
+  useEffect(() => {
+    // Strict Timer: Tabhi chalta hai jab dono log room me actively connected hon
+    let timer = null;
+    if (isBothConnected) {
+      timer = setInterval(() => {
+        setSecondsElapsed((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isBothConnected]);
+
+  const freeSeconds = 10 * 60; // 10 minutes free trial
   const isFreeTrial = secondsElapsed < freeSeconds;
 
   const formatTime = (totalSec) => {
@@ -30,10 +40,6 @@ export default function ClassroomHeader({
 
   const billableMinutes = isFreeTrial ? 0 : Math.ceil((secondsElapsed - freeSeconds) / 60);
   const currentCost = billableMinutes * ratePerMin;
-
-  // Check peer presence
-  const otherRole = currentUserRole === 'teacher' ? 'student' : 'teacher';
-  const isPeerOnline = peersInRoom.some((p) => p.role === otherRole);
 
   const handleConfirmExit = () => {
     setShowExitConfirm(false);
@@ -66,11 +72,16 @@ export default function ClassroomHeader({
         </div>
       </div>
 
-      {/* 2. Center: Timer & Running Billing Meter */}
+      {/* 2. Center: Strict 2-Way Presence Timer & Running Billing Meter */}
       <div className="flex items-center gap-2.5 bg-slate-950 border border-slate-800 px-3.5 py-1.5 rounded-xl font-mono text-xs shadow-inner">
         <div className="flex items-center gap-1.5 text-slate-200">
-          <Clock className="w-3.5 h-3.5 text-indigo-400" />
+          <Clock className={`w-3.5 h-3.5 ${isBothConnected ? 'text-indigo-400' : 'text-amber-400'}`} />
           <span className="font-semibold">{formatTime(secondsElapsed)}</span>
+          {!isBothConnected && (
+            <span className="text-[10px] text-amber-400 flex items-center gap-0.5" title="Timer paused because one person is not connected">
+              <PauseCircle className="w-3 h-3" /> Paused
+            </span>
+          )}
         </div>
 
         <span className="text-slate-800">|</span>
@@ -78,7 +89,7 @@ export default function ClassroomHeader({
         {isFreeTrial ? (
           <div className="flex items-center gap-1 text-emerald-400 font-semibold text-[11px]">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Trial: {formatTime(freeSeconds - secondsElapsed)} free</span>
+            <span>Trial: {formatTime(Math.max(0, freeSeconds - secondsElapsed))} free</span>
           </div>
         ) : (
           <div className="flex items-center gap-1 text-amber-400 font-bold text-[11px]">
@@ -88,22 +99,11 @@ export default function ClassroomHeader({
         )}
       </div>
 
-      {/* 3. Right: Google Meet Option & Leave Room */}
+      {/* 3. Right: Leave Room */}
       <div className="flex items-center gap-2">
-        {onSwitchToGoogleMeet && (
-          <button
-            onClick={onSwitchToGoogleMeet}
-            className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
-            title="Switch to Google Meet if WebRTC video has slow network"
-          >
-            <Video className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Google Meet Call</span>
-          </button>
-        )}
-
         <button
           onClick={() => setShowExitConfirm(true)}
-          className="bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow-sm"
+          className="bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 text-xs font-semibold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow-sm"
         >
           <LogOut className="w-3.5 h-3.5" />
           <span>Leave Room</span>
@@ -121,7 +121,7 @@ export default function ClassroomHeader({
             <div>
               <h3 className="font-bold text-white text-base">Leave Session?</h3>
               <p className="text-xs text-slate-400 mt-1">
-                You can rejoin this room anytime from your dashboard as long as the session is still active.
+                You can rejoin this room anytime from your dashboard as long as the session room is still active.
               </p>
             </div>
 

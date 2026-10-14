@@ -4,6 +4,7 @@ import {
   CheckCircle, XCircle, X, RefreshCw 
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { supabase } from '../../lib/supabase';
 import { 
   fetchTeacherSubjects, 
   createSubject, 
@@ -16,9 +17,11 @@ import {
   getProfile,
   fetchUserBookings,
   updateBookingStatus,
-  cancelOrDeleteBooking
+  cancelOrDeleteBooking,
+  activateBookingRoom,
+  destroyBookingRoom
 } from '../../lib/db';
-import { supabase } from '../../lib/supabase';
+
 import TeacherMetrics from './TeacherMetrics';
 import CourseManager from './CourseManager';
 import ScheduleManager from './ScheduleManager';
@@ -26,31 +29,6 @@ import ConfirmedSessions from './ConfirmedSessions';
 import SessionHistory from './SessionHistory';
 import PayoutModal from './PayoutModal';
 import AddSubjectModal from './AddSubjectModal';
-
-const DEFAULT_DEMO_COURSE = {
-  id: 'demo-1',
-  title: 'Mathematics (Calculus & Vectors)',
-  rate: 5,
-  freeMins: 10,
-  isPublished: false,
-  isDemo: true,
-  chapters: [
-    {
-      id: 101,
-      name: 'Differential Equations',
-      topics: ['First Order ODE', 'Homogeneous Equations']
-    }
-  ]
-};
-
-const DEFAULT_EXAMPLE_SLOT = {
-  id: 'slot-demo-1',
-  days: ['Mon', 'Wed', 'Fri'],
-  startTime: '18:00',
-  endTime: '19:00',
-  isActive: true,
-  isDemo: true
-};
 
 export default function TeacherDashboard() {
   const { 
@@ -63,15 +41,15 @@ export default function TeacherDashboard() {
 
   const teacherId = currentUser?.id;
 
-  const [dashboardTab, setDashboardTab] = useState('courses');
+  const [dashboardTab, setDashboardTab] = useState('confirmed');
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [showAddSubjectModal, setShowAddSubjectModal] = useState(false);
   const [showRequestsModal, setShowRequestsModal] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Courses & Schedule State
-  const [courses, setCourses] = useState([DEFAULT_DEMO_COURSE]);
-  const [timeSlots, setTimeSlots] = useState([DEFAULT_EXAMPLE_SLOT]);
+  const [courses, setCourses] = useState([]);
+  const [timeSlots, setTimeSlots] = useState([]);
 
   // Real History, Metrics & Bookings State
   const [history, setHistory] = useState([]);
@@ -104,29 +82,25 @@ export default function TeacherDashboard() {
 
       // 1. Subjects
       if (dbSubjects && dbSubjects.length > 0) {
-        const mappedCourses = dbSubjects.map(s => ({
+        setCourses(dbSubjects.map(s => ({
           id: s.id,
           title: s.title,
           rate: s.rate ?? 5,
           freeMins: s.free_mins ?? 10,
           isPublished: s.is_published ?? true,
-          isDemo: false,
           chapters: Array.isArray(s.chapters) ? s.chapters : []
-        }));
-        setCourses(mappedCourses);
+        })));
       }
 
       // 2. Schedules
       if (dbSchedules && dbSchedules.length > 0) {
-        const mappedSlots = dbSchedules.map(sc => ({
+        setTimeSlots(dbSchedules.map(sc => ({
           id: sc.id,
           days: Array.isArray(sc.days) ? sc.days : (sc.day_of_week ? [sc.day_of_week] : ['Mon']),
           startTime: sc.start_time || '10:00',
           endTime: sc.end_time || '11:00',
-          isActive: sc.is_active ?? true,
-          isDemo: false
-        }));
-        setTimeSlots(mappedSlots);
+          isActive: sc.is_active ?? true
+        })));
       }
 
       // 3. Profile & Payout
@@ -139,16 +113,13 @@ export default function TeacherDashboard() {
             accountNumber: dbProfile.bank_account_no || '',
             ifsc: dbProfile.bank_ifsc || ''
           });
-          if (!dbProfile.upi_id && dbProfile.bank_account_no) {
-            setPayoutMethod('gateway');
-          }
         }
         if (dbProfile.is_online !== undefined) {
           setIsTeacherOnline(dbProfile.is_online);
         }
       }
 
-      // 4. Bookings & Requests Sync
+      // 4. Bookings & Requests Sync (Exclude destroyed rooms from active list)
       if (dbBookings && dbBookings.length > 0) {
         setDbBookingsList(dbBookings.map(b => ({
           id: b.id,
@@ -158,11 +129,12 @@ export default function TeacherDashboard() {
           topic: b.topic || 'Doubt Clearing',
           time: b.start_time || b.slot_time || 'Flexible Timing',
           status: b.status || 'pending',
+          room_status: b.room_status || 'closed',
           rate: b.rate || 5,
           createdAt: b.created_at ? new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent'
         })));
 
-        const completed = dbBookings.filter(b => b.status === 'completed');
+        const completed = dbBookings.filter(b => b.status === 'completed' || b.room_status === 'destroyed');
         let sumEarned = 0;
         let sumMins = 0;
 
@@ -189,8 +161,6 @@ export default function TeacherDashboard() {
       } else {
         setDbBookingsList([]);
         setHistory([]);
-        setTotalEarnings(0);
-        setTaughtMinutes(0);
       }
 
     } catch (err) {
@@ -200,33 +170,31 @@ export default function TeacherDashboard() {
     }
   }, [teacherId, setIsTeacherOnline]);
 
- useEffect(() => {
-  if (!teacherId) return;
+  useEffect(() => {
+    if (!teacherId) return;
+    loadTeacherData();
 
-  // Pehli baar data load karein
-  loadTeacherData();
+    // Realtime Supabase Listener for Auto Sync
+    const channel = supabase
+      .channel(`teacher_bookings_${teacherId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'session_bookings',
+          filter: `teacher_id=eq.${teacherId}`
+        },
+        () => {
+          loadTeacherData();
+        }
+      )
+      .subscribe();
 
-  // Realtime listener (Student ke request bhejte hi live card pop-up hoga)
-  const channel = supabase
-    .channel(`teacher_bookings_${teacherId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'session_bookings',
-        filter: `teacher_id=eq.${teacherId}`
-      },
-      () => {
-        loadTeacherData(); // Auto reload without manual sync button
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [teacherId, loadTeacherData]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [teacherId, loadTeacherData]);
 
   // Online Status Toggle
   const handleToggleOnlineStatus = async () => {
@@ -241,145 +209,10 @@ export default function TeacherDashboard() {
     }
   };
 
-  // Add Subject
-  const handleAddSubjectToDb = async (newSub) => {
-    if (!teacherId) return;
-
-    try {
-      const created = await createSubject({
-        teacher_id: teacherId,
-        title: newSub.title,
-        rate: newSub.rate,
-        free_mins: newSub.freeMins || 10,
-        is_published: true,
-        chapters: newSub.chapters || []
-      });
-
-      setCourses(prev => [
-        ...prev.filter(c => c.id !== 'demo-1'),
-        {
-          id: created.id,
-          title: created.title,
-          rate: created.rate,
-          freeMins: created.free_mins,
-          isPublished: created.is_published,
-          isDemo: false,
-          chapters: created.chapters || []
-        }
-      ]);
-    } catch (err) {
-      console.error('Error creating subject:', err);
-      alert('Subject save failed: ' + err.message);
-    }
-  };
-
-  // Slot Handlers
-  const handleAddSlotToDb = async (slotData) => {
-    if (!teacherId) return;
-
-    try {
-      const created = await addTeacherScheduleSlot({
-        teacher_id: teacherId,
-        day_of_week: slotData.days[0] || 'Monday',
-        start_time: slotData.startTime,
-        end_time: slotData.endTime,
-        is_active: slotData.isActive ?? true
-      });
-
-      setTimeSlots(prev => [
-        ...prev.filter(s => s.id !== 'slot-demo-1'),
-        {
-          id: created.id,
-          days: slotData.days,
-          startTime: slotData.startTime,
-          endTime: slotData.endTime,
-          isActive: slotData.isActive,
-          isDemo: false
-        }
-      ]);
-    } catch (err) {
-      console.error('Error adding slot:', err);
-      alert('Slot save failed: ' + err.message);
-    }
-  };
-
-  const handleUpdateSlotInDb = async (slotId, slotData) => {
-    if (!teacherId || String(slotId).startsWith('slot-demo-')) return;
-    try {
-      await updateTeacherScheduleSlot(slotId, slotData);
-    } catch (err) {
-      console.error('Error updating slot in DB:', err);
-      throw err;
-    }
-  };
-
-  const handleToggleSlotInDb = async (slotId, nextActiveStatus) => {
-    const slot = timeSlots.find(s => s.id === slotId);
-    if (!slot) return;
-
-    setTimeSlots(prev => prev.map(s => s.id === slotId ? { ...s, isActive: nextActiveStatus } : s));
-
-    if (teacherId && !String(slotId).startsWith('slot-demo-')) {
-      try {
-        await updateTeacherScheduleSlot(slotId, {
-          days: slot.days,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-          isActive: nextActiveStatus
-        });
-      } catch (err) {
-        console.error('Error toggling slot active status:', err);
-      }
-    }
-  };
-
-  const handleDeleteSlotFromDb = async (slotId) => {
-    try {
-      if (!String(slotId).startsWith('slot-demo-')) {
-        await deleteTeacherScheduleSlot(slotId);
-      }
-      setTimeSlots(prev => prev.filter(s => s.id !== slotId));
-    } catch (err) {
-      console.error('Error deleting slot:', err);
-    }
-  };
-
-  // Payout Save
-  const handleSavePayoutToDb = async (payoutPayload) => {
-    if (!teacherId) return;
-    try {
-      await updateTeacherPayoutDetails(teacherId, {
-        payoutMethod: payoutPayload.payoutMethod,
-        upiId: payoutPayload.upiId,
-        bankDetails: payoutPayload.bankDetails,
-        qrCodeUrl: payoutPayload.qrCodeUrl
-      });
-    } catch (err) {
-      console.error('Error saving payout:', err);
-      throw err;
-    }
-  };
-
-  const handleQrUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    if (file.size > 2 * 1024 * 1024) {
-      alert('Please upload an image smaller than 2MB');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setQrCodeUrl(reader.result);
-    };
-    reader.readAsDataURL(file);
-  };
-
   const pendingRequests = dbBookingsList.filter(r => r.status === 'pending');
-  const confirmedRequests = dbBookingsList.filter(r => r.status === 'accepted');
+  const confirmedRequests = dbBookingsList.filter(r => r.status === 'accepted' && r.room_status !== 'destroyed');
 
-  // Accept Request Handler
+  // Accept Request
   const handleAcceptRequest = async (requestId) => {
     setDbBookingsList(prev => prev.map(r => r.id === requestId ? { ...r, status: 'accepted' } : r));
     setShowRequestsModal(false);
@@ -388,24 +221,21 @@ export default function TeacherDashboard() {
     try {
       await updateBookingStatus(requestId, 'accepted');
     } catch (err) {
-      console.error('Failed to accept booking in DB:', err);
-      alert('Accept failed in DB: ' + err.message);
+      console.error('Failed to accept booking:', err);
     }
   };
 
-  // Decline Request Handler
+  // Decline Request
   const handleDeclineRequest = async (requestId) => {
     setDbBookingsList(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
-
     try {
       await updateBookingStatus(requestId, 'declined');
     } catch (err) {
-      console.error('Failed to decline booking in DB:', err);
-      alert('Decline failed in DB: ' + err.message);
+      console.error('Failed to decline booking:', err);
     }
   };
 
-  // Cancel Confirmed Session Handler
+  // Cancel Confirmed Session
   const handleCancelConfirmedSession = async (requestId) => {
     setDbBookingsList(prev => prev.filter(r => r.id !== requestId));
     try {
@@ -415,22 +245,51 @@ export default function TeacherDashboard() {
         await cancelOrDeleteBooking(requestId);
       }
     } catch (err) {
-      console.error('Failed to cancel confirmed session in DB:', err);
+      console.error('Failed to cancel session:', err);
     }
   };
 
-  // Direct dynamic room launcher for Teacher
+  // ROOM LIFECYCLE 1: Create Live Room
+  const handleCreateRoom = async (bookingId) => {
+    try {
+      await activateBookingRoom(bookingId);
+      setDbBookingsList(prev => prev.map(r => r.id === bookingId ? { ...r, room_status: 'active' } : r));
+      
+      const targetSession = dbBookingsList.find(b => b.id === bookingId);
+      handleLaunchRoom({
+        ...targetSession,
+        room_status: 'active'
+      });
+    } catch (err) {
+      alert('Failed to create room: ' + err.message);
+    }
+  };
+
+  // ROOM LIFECYCLE 2: Destroy / End Live Room
+  const handleDestroyRoom = async (bookingId) => {
+    if (!window.confirm('Are you sure you want to completely destroy and close this classroom? Students will not be able to rejoin.')) return;
+    try {
+      await destroyBookingRoom(bookingId);
+      setDbBookingsList(prev => prev.filter(r => r.id !== bookingId));
+      loadTeacherData();
+    } catch (err) {
+      alert('Failed to destroy room: ' + err.message);
+    }
+  };
+
+  // Launch Room Helper
   const handleLaunchRoom = (session) => {
     const roomPayload = {
       ...session,
       tutorUpi: upiId,
       tutorQr: qrCodeUrl
     };
-
     if (startClassroomSession) {
       startClassroomSession(roomPayload);
     }
   };
+
+  const activeLiveRoom = confirmedRequests.find(r => r.room_status === 'active');
 
   return (
     <main className="flex-1 max-w-6xl mx-auto px-4 md:px-8 py-8 space-y-6 w-full">
@@ -449,7 +308,6 @@ export default function TeacherDashboard() {
             onClick={() => loadTeacherData(true)}
             disabled={isRefreshing}
             className="bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 px-3 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
-            title="Sync latest student requests from database"
           >
             <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshing ? 'animate-spin' : ''}`} />
             <span>{isRefreshing ? 'Syncing...' : 'Sync'}</span>
@@ -480,6 +338,41 @@ export default function TeacherDashboard() {
         </div>
       </div>
 
+      {/* TOP PERSISTENT ONGOING ACTIVE ROOM BANNER */}
+      {activeLiveRoom && (
+        <div className="p-4 bg-gradient-to-r from-emerald-950/90 via-slate-900 to-indigo-950/80 border border-emerald-500/50 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xl">
+          <div className="flex items-center gap-3">
+            <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+            <div>
+              <h4 className="text-white text-sm font-bold flex items-center gap-2">
+                <span>Classroom is Live</span>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  {activeLiveRoom.subject}
+                </span>
+              </h4>
+              <p className="text-slate-400 text-xs mt-0.5">
+                Student {activeLiveRoom.studentName} is connected or waiting for you.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleLaunchRoom(activeLiveRoom)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg transition"
+            >
+              Rejoin Room
+            </button>
+            <button
+              onClick={() => handleDestroyRoom(activeLiveRoom.id)}
+              className="bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-xs font-semibold px-3 py-2.5 rounded-xl transition"
+            >
+              Destroy Room
+            </button>
+          </div>
+        </div>
+      )}
+
       <TeacherMetrics 
         taughtMinutes={taughtMinutes}
         totalEarnings={totalEarnings}
@@ -487,7 +380,23 @@ export default function TeacherDashboard() {
         onOpenPayout={() => setShowPayoutModal(true)}
       />
 
+      {/* Tabs Bar */}
       <div className="flex gap-2 border-b border-slate-800 pb-2 text-xs font-semibold overflow-x-auto">
+        <button
+          onClick={() => setDashboardTab('confirmed')}
+          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
+            dashboardTab === 'confirmed' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
+          }`}
+        >
+          <UserCheck className="w-4 h-4" />
+          <span>Confirmed Sessions</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            dashboardTab === 'confirmed' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>
+            {confirmedRequests.length}
+          </span>
+        </button>
+
         <button
           onClick={() => setDashboardTab('courses')}
           className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
@@ -519,21 +428,6 @@ export default function TeacherDashboard() {
         </button>
 
         <button
-          onClick={() => setDashboardTab('confirmed')}
-          className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
-            dashboardTab === 'confirmed' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
-          }`}
-        >
-          <UserCheck className="w-4 h-4" />
-          <span>Confirmed Sessions</span>
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-            dashboardTab === 'confirmed' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
-          }`}>
-            {confirmedRequests.length}
-          </span>
-        </button>
-
-        <button
           onClick={() => setDashboardTab('history')}
           className={`px-4 py-2 rounded-xl transition flex items-center gap-2 whitespace-nowrap ${
             dashboardTab === 'history' ? 'bg-indigo-600 text-white shadow' : 'bg-slate-900 text-slate-400 hover:text-white'
@@ -549,6 +443,16 @@ export default function TeacherDashboard() {
         </button>
       </div>
 
+      {dashboardTab === 'confirmed' && (
+        <ConfirmedSessions 
+          confirmedRequests={confirmedRequests}
+          onLaunchRoom={handleLaunchRoom}
+          onCancelSession={handleCancelConfirmedSession}
+          onCreateRoom={handleCreateRoom}
+          onDestroyRoom={handleDestroyRoom}
+        />
+      )}
+
       {dashboardTab === 'courses' && (
         <CourseManager 
           courses={courses}
@@ -562,43 +466,16 @@ export default function TeacherDashboard() {
         <ScheduleManager 
           timeSlots={timeSlots}
           setTimeSlots={setTimeSlots}
-          onAddSlot={handleAddSlotToDb}
-          onUpdateSlot={handleUpdateSlotInDb}
-          onToggleSlot={handleToggleSlotInDb}
-          onDeleteSlot={handleDeleteSlotFromDb}
-        />
-      )}
-
-      {dashboardTab === 'confirmed' && (
-        <ConfirmedSessions 
-          confirmedRequests={confirmedRequests}
-          onLaunchRoom={handleLaunchRoom}
-          onCancelSession={handleCancelConfirmedSession}
+          onAddSlot={async (s) => { await addTeacherScheduleSlot({ teacher_id: teacherId, day_of_week: s.days[0], start_time: s.startTime, end_time: s.endTime, is_active: true }); loadTeacherData(); }}
+          onUpdateSlot={async (id, s) => { await updateTeacherScheduleSlot(id, s); loadTeacherData(); }}
+          onToggleSlot={async (id, active) => { await updateTeacherScheduleSlot(id, { isActive: active }); loadTeacherData(); }}
+          onDeleteSlot={async (id) => { await deleteTeacherScheduleSlot(id); loadTeacherData(); }}
         />
       )}
 
       {dashboardTab === 'history' && (
         <SessionHistory history={history} />
       )}
-
-    {/* ONGOING SESSION PERSISTENT REJOIN BANNER */}
-{confirmedRequests.length > 0 && (
-  <div className="p-3.5 bg-gradient-to-r from-emerald-950/80 via-indigo-950/60 to-slate-900 border border-emerald-500/50 rounded-2xl flex items-center justify-between shadow-xl animate-pulse">
-    <div className="flex items-center gap-2.5">
-      <span className="w-3 h-3 rounded-full bg-emerald-400" />
-      <div>
-        <h4 className="text-white text-xs font-bold">You have an Active Confirmed Session!</h4>
-        <p className="text-slate-400 text-[11px]">Student is connected or waiting for your launch.</p>
-      </div>
-    </div>
-    <button
-      onClick={() => handleLaunchRoom(confirmedRequests[0])}
-      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition"
-    >
-      Resume / Launch Live Classroom
-    </button>
-  </div>
-)}
 
       {/* Requests Modal */}
       {showRequestsModal && (
@@ -616,7 +493,7 @@ export default function TeacherDashboard() {
                 <Bell className="w-5 h-5 text-amber-400" />
                 <span>Pending Student Requests</span>
               </h3>
-              <p className="text-xs text-slate-400">Accept to launch immediate 1-on-1 tutoring sessions.</p>
+              <p className="text-xs text-slate-400">Accept requests to create a live 1-on-1 room.</p>
             </div>
 
             <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
@@ -667,16 +544,27 @@ export default function TeacherDashboard() {
         upiId={upiId}
         setUpiId={setUpiId}
         qrCodeUrl={qrCodeUrl}
-        onQrUpload={handleQrUpload}
+        onQrUpload={(e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onloadend = () => setQrCodeUrl(reader.result);
+          reader.readAsDataURL(file);
+        }}
         bankDetails={bankDetails}
         setBankDetails={setBankDetails}
-        onSave={handleSavePayoutToDb}
+        onSave={async (payload) => {
+          await updateTeacherPayoutDetails(teacherId, payload);
+        }}
       />
 
       <AddSubjectModal 
         isOpen={showAddSubjectModal}
         onClose={() => setShowAddSubjectModal(false)}
-        onAddSubject={handleAddSubjectToDb}
+        onAddSubject={async (newSub) => {
+          await createSubject({ teacher_id: teacherId, title: newSub.title, rate: newSub.rate, free_mins: newSub.freeMins || 10, is_published: true, chapters: newSub.chapters || [] });
+          loadTeacherData();
+        }}
       />
     </main>
   );
