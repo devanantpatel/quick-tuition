@@ -255,7 +255,24 @@ export default function StudentDashboard() {
           <span>{isRefreshing ? 'Syncing...' : 'Sync Live Updates'}</span>
         </button>
       </div>
-
+{/* ONGOING SESSION PERSISTENT REJOIN BANNER */}
+{requestsList.some(r => r.status === 'accepted') && (
+  <div className="p-3.5 bg-gradient-to-r from-emerald-950/80 via-indigo-950/60 to-slate-900 border border-emerald-500/50 rounded-2xl flex items-center justify-between shadow-xl animate-pulse">
+    <div className="flex items-center gap-2.5">
+      <span className="w-3 h-3 rounded-full bg-emerald-400" />
+      <div>
+        <h4 className="text-white text-xs font-bold">Classroom Session in Progress!</h4>
+        <p className="text-slate-400 text-[11px]">Your 1-on-1 session is live. Click to jump back in.</p>
+      </div>
+    </div>
+    <button
+      onClick={() => handleJoinClassroom(requestsList.find(r => r.status === 'accepted'))}
+      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition"
+    >
+      Rejoin Classroom Now
+    </button>
+  </div>
+)}
       {/* 2. Top Section (Scrollable & Collapsible) */}
       <div className="p-4 md:p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3.5 shadow-lg">
         <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-3">

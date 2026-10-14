@@ -1,341 +1,427 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, MicOff, Video, VideoOff, Send, QrCode, 
-  MessageSquare, User, Volume2 
+  Mic, MicOff, Video, VideoOff, MessageSquare, Send, 
+  ExternalLink, Globe, Shield, RefreshCw 
 } from 'lucide-react';
-import { useApp } from '../../context/AppContext';
 
-export default function SideDock({ 
-  tutorName = 'Anant Patel', 
-  broadcast, 
-  registerListener 
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ],
+};
+
+export default function SideDock({
+  tutorName = 'Educator',
+  broadcast,
+  registerListener,
+  peersInRoom = [],
+  callMode = 'custom',
+  googleMeetUrl = '',
+  isTeacher = false,
+  onToggleCallMode,
+  currentUser
 }) {
-  const { currentUser, activeSession } = useApp();
-  const isTeacher = currentUser?.role === 'teacher';
-
   // Media States
-  const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
-  const [mediaError, setMediaError] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [hasRemoteStream, setHasRemoteStream] = useState(false);
 
-  // Video Refs
-  const localVideoRef = useRef(null);
-  const localStreamRef = useRef(null);
-
-  // Realtime Chat States
+  // Chat States
   const [messages, setMessages] = useState([
-    { 
-      id: 1, 
-      sender: tutorName, 
-      text: 'Namaste! Welcome to the session. Feel free to ask your doubts on the board or editor.',
-      time: 'Start'
-    }
+    { id: 1, sender: 'System', text: 'Welcome to the session! Doubts can be asked here.', isSystem: true }
   ]);
-  const [inputMsg, setInputMsg] = useState('');
-  const chatScrollRef = useRef(null);
+  const [inputText, setInputText] = useState('');
 
-  // QR Modal State & Tutor Payment Info
-  const [showQrModal, setShowQrModal] = useState(false);
-  const upiId = activeSession?.tutorUpi || '7607765685@okbizaxis';
-  const qrCodeUrl = activeSession?.tutorQr || '';
+  // Refs for WebRTC
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const pcRef = useRef(null);
+  const chatBottomRef = useRef(null);
 
-  // 1. Camera & Microphone Setup (Native Browser Media Stream)
+  const myRole = isTeacher ? 'teacher' : 'student';
+  const otherRole = isTeacher ? 'student' : 'teacher';
+  const isPeerOnline = peersInRoom.some(p => p.role === otherRole);
+
+  // 1. Initialize Local Camera Stream
   useEffect(() => {
-    let stream = null;
+    let active = true;
 
-    const startLocalStream = async () => {
+    async function initMedia() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
-          audio: true
+          audio: true,
         });
-        localStreamRef.current = stream;
+        if (!active) return;
 
+        localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-      } catch (err) {
-        console.warn('Camera/Mic permission denied or unavailable:', err);
-        setMediaError('Camera/Mic preview unavailable');
-      }
-    };
 
-    startLocalStream();
+        // Initialize PeerConnection
+        setupPeerConnection(stream);
+      } catch (err) {
+        console.warn('Camera/Mic permission failed or unavailable:', err);
+      }
+    }
+
+    if (callMode === 'custom') {
+      initMedia();
+    }
 
     return () => {
-      // Cleanup tracks on unmount
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      active = false;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      if (pcRef.current) {
+        pcRef.current.close();
       }
     };
-  }, []);
+  }, [callMode]);
 
-  // Toggle Microphone
-  const toggleMic = () => {
+  // 2. WebRTC Peer Connection Setup & Supabase Signaling
+  const setupPeerConnection = (stream) => {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    pcRef.current = pc;
+
+    // Add local tracks
+    stream.getTracks().forEach((track) => {
+      pc.addTrack(track, stream);
+    });
+
+    // Remote Track Listener
+    pc.ontrack = (event) => {
+      if (remoteVideoRef.current && event.streams[0]) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+        setHasRemoteStream(true);
+      }
+    };
+
+    // ICE Candidate Exchange
+    pc.onicecandidate = (event) => {
+      if (event.candidate && broadcast) {
+        broadcast('webrtc:ice_candidate', {
+          candidate: event.candidate,
+          from: myRole,
+        });
+      }
+    };
+
+    // Signaling Listeners
+    if (registerListener) {
+      registerListener('webrtc:offer', async (data) => {
+        if (data.from !== myRole && pcRef.current) {
+          try {
+            await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await pcRef.current.createAnswer();
+            await pcRef.current.setLocalDescription(answer);
+            broadcast('webrtc:answer', { answer, from: myRole });
+          } catch (e) {
+            console.error('Error handling offer:', e);
+          }
+        }
+      });
+
+      registerListener('webrtc:answer', async (data) => {
+        if (data.from !== myRole && pcRef.current) {
+          try {
+            await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+          } catch (e) {
+            console.error('Error handling answer:', e);
+          }
+        }
+      });
+
+      registerListener('webrtc:ice_candidate', async (data) => {
+        if (data.from !== myRole && pcRef.current && data.candidate) {
+          try {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {
+            console.error('Error adding candidate:', e);
+          }
+        }
+      });
+
+      registerListener('classroom:chat_message', (msg) => {
+        setMessages((prev) => [...prev, msg]);
+      });
+    }
+
+    // Teacher initiates WebRTC call offer
+    if (isTeacher) {
+      createCallOffer(pc);
+    }
+  };
+
+  const createCallOffer = async (pc) => {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (broadcast) {
+        broadcast('webrtc:offer', { offer, from: myRole });
+      }
+    } catch (err) {
+      console.error('Failed to create call offer:', err);
+    }
+  };
+
+  // Toggle Mute / Cam
+  const toggleMute = () => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
-        setMicOn(audioTrack.enabled);
+        setIsMuted(!audioTrack.enabled);
       }
-    } else {
-      setMicOn(!micOn);
     }
   };
 
-  // Toggle Camera
-  const toggleCam = () => {
+  const toggleVideo = () => {
     if (localStreamRef.current) {
       const videoTrack = localStreamRef.current.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
-        setCamOn(videoTrack.enabled);
+        setIsVideoOff(!videoTrack.enabled);
       }
-    } else {
-      setCamOn(!camOn);
     }
   };
 
-  // 2. Realtime Chat Listeners
-  useEffect(() => {
-    if (!registerListener) return;
-
-    registerListener('classroom:chat_message', (payload) => {
-      if (payload && payload.id) {
-        setMessages((prev) => {
-          // Avoid duplicate messages
-          if (prev.some(m => m.id === payload.id)) return prev;
-          return [...prev, payload];
-        });
-      }
-    });
-  }, [registerListener]);
-
-  // Auto-scroll chat to bottom
-  useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  // Handle Send Chat
-  const handleSend = (e) => {
+  // Send Chat Message
+  const handleSendMessage = (e) => {
     e.preventDefault();
-    if (!inputMsg.trim()) return;
+    if (!inputText.trim()) return;
 
     const newMsg = {
-      id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      sender: currentUser?.name || (isTeacher ? tutorName : 'Student'),
-      role: isTeacher ? 'teacher' : 'student',
-      text: inputMsg.trim(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      id: Date.now(),
+      sender: currentUser?.name || (isTeacher ? 'Teacher' : 'Student'),
+      role: myRole,
+      text: inputText.trim(),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    // Local state update
     setMessages((prev) => [...prev, newMsg]);
-
-    // Realtime Supabase broadcast to peer
     if (broadcast) {
       broadcast('classroom:chat_message', newMsg);
     }
-
-    setInputMsg('');
+    setInputText('');
   };
 
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   return (
-    <aside className="w-full h-full bg-slate-900 border-l border-slate-800 flex flex-col min-h-0">
+    <div className="flex flex-col h-full w-full bg-slate-900 overflow-hidden">
       
-      {/* 1. Live Video Preview Boxes */}
-      <div className="p-3 border-b border-slate-800 space-y-2 shrink-0">
-        <div className="grid grid-cols-2 gap-2">
-          
-          {/* Box 1: Local Peer Video */}
-          <div className="aspect-video bg-slate-950 rounded-xl border border-slate-800 relative overflow-hidden flex items-center justify-center">
-            {camOn && !mediaError ? (
+      {/* 1. Call Mode Switcher Tab (WebRTC vs Google Meet) */}
+      <div className="p-2 border-b border-slate-800 bg-slate-950 flex items-center justify-between gap-1.5 shrink-0">
+        <div className="flex gap-1 bg-slate-900 p-0.5 rounded-xl border border-slate-800 text-[11px] font-semibold w-full">
+          <button
+            onClick={() => onToggleCallMode && onToggleCallMode('custom')}
+            className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition ${
+              callMode === 'custom' 
+                ? 'bg-indigo-600 text-white shadow' 
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Video className="w-3.5 h-3.5" />
+            <span>In-App Video</span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (onToggleCallMode) {
+                let meetUrl = googleMeetUrl;
+                if (!meetUrl && isTeacher) {
+                  meetUrl = prompt('Enter Google Meet Link (e.g., https://meet.google.com/abc-defg-hij):', 'https://meet.google.com/new') || '';
+                }
+                onToggleCallMode('meet', meetUrl);
+              }
+            }}
+            className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition ${
+              callMode === 'meet' 
+                ? 'bg-emerald-600 text-white shadow' 
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>Google Meet</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 2. Video Calling Container (WebRTC or Google Meet) */}
+      <div className="p-3 border-b border-slate-800 shrink-0 space-y-2">
+        {callMode === 'custom' ? (
+          <div className="grid grid-cols-2 gap-2">
+            
+            {/* Local Video Tile */}
+            <div className="relative aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-inner">
               <video 
                 ref={localVideoRef} 
                 autoPlay 
                 playsInline 
                 muted 
-                className="w-full h-full object-cover scale-x-[-1]"
+                className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : 'block'}`}
               />
-            ) : (
-              <div className="flex flex-col items-center justify-center text-slate-500 gap-1">
-                <div className="w-9 h-9 rounded-full bg-indigo-600/20 text-indigo-300 font-bold flex items-center justify-center text-xs">
-                  {(currentUser?.name || 'Y').charAt(0).toUpperCase()}
-                </div>
-                <span className="text-[9px]">Camera Off</span>
+              {isVideoOff && (
+                <div className="text-[10px] text-slate-500 font-mono">Camera Off</div>
+              )}
+              <div className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur-sm text-[9px] font-semibold text-slate-300 px-1.5 py-0.5 rounded">
+                You ({myRole})
               </div>
-            )}
-
-            {/* Local Label Badge */}
-            <span className="absolute bottom-1.5 left-1.5 text-[9px] bg-black/75 px-1.5 py-0.5 rounded text-white font-medium flex items-center gap-1">
-              <span className={`w-1.5 h-1.5 rounded-full ${micOn ? 'bg-emerald-400' : 'bg-rose-500'}`} />
-              <span>You ({isTeacher ? 'Tutor' : 'Student'})</span>
-            </span>
-          </div>
-
-          {/* Box 2: Remote Peer Video Tile */}
-          <div className="aspect-video bg-slate-950 rounded-xl border border-slate-800 relative overflow-hidden flex items-center justify-center">
-            <div className="flex flex-col items-center justify-center text-slate-400 gap-1">
-              <div className="w-9 h-9 rounded-full bg-emerald-600/20 text-emerald-300 font-bold flex items-center justify-center text-xs border border-emerald-500/30">
-                {(isTeacher ? 'S' : tutorName.charAt(0)).toUpperCase()}
-              </div>
-              <span className="text-[9px] text-slate-500 font-mono">Live Peer Connected</span>
             </div>
 
-            {/* Remote Label Badge */}
-            <span className="absolute bottom-1.5 left-1.5 text-[9px] bg-black/75 px-1.5 py-0.5 rounded text-slate-200 font-medium">
-              {isTeacher ? 'Student' : `${tutorName} (Tutor)`}
-            </span>
-          </div>
-        </div>
-
-        {/* Media Control Action Buttons */}
-        <div className="flex items-center justify-between gap-1.5 pt-1">
-          <div className="flex gap-1.5">
-            <button
-              onClick={toggleMic}
-              className={`p-2 rounded-xl text-xs font-semibold flex items-center gap-1 transition ${
-                micOn ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-rose-600/20 text-rose-400 border border-rose-500/30'
-              }`}
-              title={micOn ? 'Mute Microphone' : 'Unmute Microphone'}
-            >
-              {micOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-              <span className="text-[10px]">{micOn ? 'Mute' : 'Muted'}</span>
-            </button>
-
-            <button
-              onClick={toggleCam}
-              className={`p-2 rounded-xl text-xs font-semibold flex items-center gap-1 transition ${
-                camOn ? 'bg-slate-800 text-white hover:bg-slate-700' : 'bg-rose-600/20 text-rose-400 border border-rose-500/30'
-              }`}
-              title={camOn ? 'Turn off camera' : 'Turn on camera'}
-            >
-              {camOn ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
-              <span className="text-[10px]">{camOn ? 'Cam' : 'Off'}</span>
-            </button>
-          </div>
-
-          {/* Direct Pay UPI Button (Shows Tutor's real QR code) */}
-          {!isTeacher && (
-            <button
-              onClick={() => setShowQrModal(true)}
-              className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/30 text-xs font-semibold px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition"
-            >
-              <QrCode className="w-3.5 h-3.5" />
-              <span>Pay UPI</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 2. Real-Time Chat Section */}
-      <div className="flex-1 flex flex-col p-3 overflow-hidden text-xs min-h-0">
-        <div className="flex items-center justify-between gap-1.5 text-slate-400 font-semibold mb-2 pb-1.5 border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="text-white">Live Session Chat</span>
-          </div>
-          <span className="text-[10px] text-slate-500 font-mono">{messages.length} msgs</span>
-        </div>
-
-        {/* Message Log */}
-        <div 
-          ref={chatScrollRef}
-          className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0"
-        >
-          {messages.map((m) => {
-            const isMe = m.sender === currentUser?.name || (isTeacher ? m.role === 'teacher' : m.role === 'student');
-
-            return (
-              <div
-                key={m.id}
-                className={`p-2.5 rounded-xl max-w-[85%] text-xs space-y-0.5 shadow-sm ${
-                  isMe
-                    ? 'bg-indigo-600 text-white ml-auto rounded-tr-sm'
-                    : 'bg-slate-950 text-slate-200 border border-slate-800 mr-auto rounded-tl-sm'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 text-[10px]">
-                  <span className={`font-bold ${isMe ? 'text-indigo-200' : 'text-indigo-400'}`}>
-                    {isMe ? 'You' : m.sender}
-                  </span>
-                  <span className={`font-mono text-[9px] ${isMe ? 'text-indigo-300' : 'text-slate-500'}`}>
-                    {m.time}
+            {/* Remote Peer Video Tile (2-Way View) */}
+            <div className="relative aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-inner">
+              <video 
+                ref={remoteVideoRef} 
+                autoPlay 
+                playsInline 
+                className={`w-full h-full object-cover ${hasRemoteStream ? 'block' : 'hidden'}`}
+              />
+              {!hasRemoteStream && (
+                <div className="text-center p-2">
+                  <div className={`w-2 h-2 rounded-full mx-auto mb-1 ${isPeerOnline ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                  <span className="text-[10px] text-slate-400 block font-medium">
+                    {isPeerOnline ? `Connecting ${otherRole}...` : `Waiting for ${otherRole}...`}
                   </span>
                 </div>
-                <p className="leading-relaxed break-words">{m.text}</p>
+              )}
+              <div className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur-sm text-[9px] font-semibold text-emerald-400 px-1.5 py-0.5 rounded">
+                {otherRole === 'teacher' ? tutorName : 'Student'}
               </div>
-            );
-          })}
+            </div>
+
+          </div>
+        ) : (
+          /* Google Meet Integrated Box */
+          <div className="p-3.5 rounded-xl bg-slate-950 border border-emerald-500/30 text-center space-y-2">
+            <div className="flex items-center justify-center gap-1.5 text-emerald-400 text-xs font-semibold">
+              <Globe className="w-4 h-4" />
+              <span>Google Meet Mode Active</span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Audio & Video call is hosted via Google Meet while tools stay synced here!
+            </p>
+            {googleMeetUrl ? (
+              <a
+                href={googleMeetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition shadow"
+              >
+                <span>Join Google Meet</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            ) : (
+              <button
+                onClick={() => {
+                  const url = prompt('Enter Google Meet Link:', 'https://meet.google.com/new');
+                  if (url && onToggleCallMode) onToggleCallMode('meet', url);
+                }}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 px-3 rounded-xl transition"
+              >
+                Set Meet URL
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Media Controls for In-App */}
+        {callMode === 'custom' && (
+          <div className="flex items-center justify-center gap-2 pt-1">
+            <button
+              onClick={toggleMute}
+              className={`p-2 rounded-xl border text-xs flex items-center gap-1.5 transition ${
+                isMuted 
+                  ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' 
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+              }`}
+            >
+              {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+              <span className="text-[10px] font-semibold">{isMuted ? 'Muted' : 'Mute'}</span>
+            </button>
+
+            <button
+              onClick={toggleVideo}
+              className={`p-2 rounded-xl border text-xs flex items-center gap-1.5 transition ${
+                isVideoOff 
+                  ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' 
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+              }`}
+            >
+              {isVideoOff ? <VideoOff className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
+              <span className="text-[10px] font-semibold">{isVideoOff ? 'Cam Off' : 'Camera'}</span>
+            </button>
+
+            {isTeacher && (
+              <button
+                onClick={() => pcRef.current && createCallOffer(pcRef.current)}
+                className="p-2 rounded-xl border border-slate-800 text-slate-400 hover:text-indigo-300 bg-slate-950 transition"
+                title="Reconnect Video Stream"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 3. Live Chat Workspace */}
+      <div className="flex-1 flex flex-col min-h-0 bg-slate-900">
+        <div className="p-2.5 border-b border-slate-800 flex items-center gap-2 text-xs font-semibold text-slate-300">
+          <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+          <span>Live Session Chat</span>
         </div>
 
-        {/* Message Input Form */}
-        <form onSubmit={handleSend} className="flex gap-1.5 pt-2 border-t border-slate-800/80 shrink-0">
+        {/* Message Stream */}
+        <div className="flex-1 p-3 overflow-y-auto space-y-2.5 text-xs min-h-0">
+          {messages.map((m) => (
+            <div 
+              key={m.id} 
+              className={`p-2.5 rounded-xl space-y-1 ${
+                m.isSystem 
+                  ? 'bg-slate-950/80 border border-slate-800/80 text-slate-400 text-center text-[11px]' 
+                  : m.role === myRole
+                    ? 'bg-indigo-600/20 border border-indigo-500/30 ml-4'
+                    : 'bg-slate-800/80 border border-slate-700/80 mr-4'
+              }`}
+            >
+              {!m.isSystem && (
+                <div className="flex justify-between items-center text-[10px] text-slate-400">
+                  <span className="font-bold text-slate-200">{m.sender}</span>
+                  <span className="font-mono">{m.time}</span>
+                </div>
+              )}
+              <p className="text-slate-200 text-xs break-words">{m.text}</p>
+            </div>
+          ))}
+          <div ref={chatBottomRef} />
+        </div>
+
+        {/* Input Bar */}
+        <form onSubmit={handleSendMessage} className="p-2.5 border-t border-slate-800 bg-slate-950 flex gap-2">
           <input
             type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
             placeholder="Type doubt or question..."
-            value={inputMsg}
-            onChange={(e) => setInputMsg(e.target.value)}
-            className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 text-xs"
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
           />
           <button
             type="submit"
-            className="bg-indigo-600 hover:bg-indigo-500 text-white p-2.5 rounded-xl transition shadow flex items-center justify-center shrink-0"
+            className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-xl transition shadow"
           >
             <Send className="w-3.5 h-3.5" />
           </button>
         </form>
       </div>
 
-      {/* 3. Direct UPI Payment Modal */}
-      {showQrModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-xs w-full text-center space-y-4 relative shadow-2xl">
-            <button 
-              onClick={() => setShowQrModal(false)} 
-              className="absolute top-3 right-3 text-slate-500 hover:text-white"
-            >
-              ✕
-            </button>
-            
-            <div>
-              <h4 className="font-bold text-white text-base">Direct UPI Payment</h4>
-              <p className="text-slate-400 text-xs mt-0.5">Pay educator directly via any UPI app</p>
-            </div>
-
-            <div className="w-48 h-48 mx-auto bg-white p-2.5 rounded-2xl flex items-center justify-center shadow-lg">
-              {qrCodeUrl ? (
-                <img 
-                  src={qrCodeUrl} 
-                  alt="Tutor QR Code" 
-                  className="w-full h-full object-contain" 
-                />
-              ) : (
-                <div className="border-2 border-slate-800 border-dashed w-full h-full flex flex-col items-center justify-center font-mono text-slate-900 text-xs font-bold gap-1">
-                  <QrCode className="w-14 h-14 text-slate-800" />
-                  <span>{upiId}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="text-xs bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-1">
-              <span className="text-slate-500 block text-[10px]">Tutor UPI VPA:</span>
-              <span className="text-emerald-400 font-mono font-bold select-all block text-sm">
-                {upiId}
-              </span>
-            </div>
-
-            <button
-              onClick={() => setShowQrModal(false)}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-xl text-xs font-semibold transition shadow-lg shadow-indigo-600/25"
-            >
-              Done / Payment Sent
-            </button>
-          </div>
-        </div>
-      )}
-    </aside>
+    </div>
   );
 }

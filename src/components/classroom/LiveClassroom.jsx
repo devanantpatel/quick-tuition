@@ -14,7 +14,6 @@ export default function LiveClassroom() {
   const userRole = currentUser?.role || 'student';
   const userName = currentUser?.name || 'User';
 
-  // Dynamic Room Identifier (links teacher & student to the same session channel)
   const roomId = activeSession?.id ? `session_${activeSession.id}` : 'live_room_default';
   const subjectTitle = activeSession?.subject || activeSession?.subject_title || 'Live 1-on-1 Mentorship';
   const ratePerMin = activeSession?.rate ?? 5;
@@ -27,7 +26,7 @@ export default function LiveClassroom() {
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
 
-  // Call Mode State: 'custom' (in-app WebRTC) | 'meet' (Google Meet embedded/linked)
+  // Call Mode State: 'custom' (in-app WebRTC) | 'meet' (Google Meet)
   const [callMode, setCallMode] = useState('custom');
   const [googleMeetUrl, setGoogleMeetUrl] = useState('');
 
@@ -43,7 +42,6 @@ export default function LiveClassroom() {
   );
 
   useEffect(() => {
-    // 1. Host Permissions Listener
     registerListener('host:permissions', (data) => {
       if (!isTeacher) {
         setIsStudentAllowed(Boolean(data.isStudentAllowed));
@@ -51,20 +49,16 @@ export default function LiveClassroom() {
       }
     });
 
-    // 2. View Mode Remote Sync
     registerListener('host:view_mode', (data) => {
       if (!isTeacher && data.mode) {
         setWorkspaceMode(data.mode);
       }
     });
 
-    // 3. Call Mode (In-App vs Google Meet) Remote Sync
     registerListener('call:mode_changed', (data) => {
       if (data?.mode) {
         setCallMode(data.mode);
-        if (data.meetUrl) {
-          setGoogleMeetUrl(data.meetUrl);
-        }
+        if (data.meetUrl) setGoogleMeetUrl(data.meetUrl);
       }
     });
   }, [isTeacher, registerListener]);
@@ -85,24 +79,20 @@ export default function LiveClassroom() {
     }
   };
 
-  // Switch between In-App Video & Google Meet (keeps exact same sidebar UI)
   const handleToggleCallMode = (newMode, newMeetUrl = '') => {
     setCallMode(newMode);
     if (newMeetUrl) setGoogleMeetUrl(newMeetUrl);
-
     broadcast('call:mode_changed', {
       mode: newMode,
       meetUrl: newMeetUrl || googleMeetUrl,
     });
   };
 
-  // Triggered when user clicks "Leave Room" or "End Session"
   const handleEndSession = (elapsedSec = 0) => {
     setFinalSeconds(elapsedSec);
     setShowReceipt(true);
   };
 
-  // Triggered when user completes the receipt modal
   const handleRedirectToDashboard = () => {
     setShowReceipt(false);
     setActiveTab(isTeacher ? 'teacher' : 'student');
@@ -137,58 +127,47 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* 2. Main Simultaneous Workspace (Unchanged layout) */}
+      {/* 2. Main Simultaneous Workspace (Persistent Mounting Fix) */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0">
         
-        {/* Workspace Canvas / Editor Area */}
         <div className={`flex-1 flex flex-col h-full overflow-hidden relative min-h-0 ${
           workspaceMode === 'chat' ? 'hidden lg:flex' : 'flex'
         }`}>
 
-          {/* SPLIT MODE: Simultaneous Side-by-Side */}
-          {workspaceMode === 'split' && (
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 h-full w-full divide-y md:divide-y-0 md:divide-x divide-slate-800 min-h-0 overflow-hidden">
-              <div className="h-full flex flex-col min-h-0 overflow-hidden relative">
-                <Whiteboard 
-                  isStudentAllowed={isStudentAllowed}
-                  setIsStudentAllowed={(val) => updatePermissions(val, isStudentCodeAllowed)}
-                  broadcast={broadcast}
-                  registerListener={registerListener}
-                />
-              </div>
-              <div className="h-full flex flex-col min-h-0 overflow-hidden relative">
-                <CodePlayground 
-                  isStudentCodeAllowed={isStudentCodeAllowed}
-                  setIsStudentCodeAllowed={(val) => updatePermissions(isStudentAllowed, val)}
-                  broadcast={broadcast}
-                  registerListener={registerListener}
-                />
-              </div>
-            </div>
-          )}
+          {/* SPLIT VIEW */}
+          <div className={`h-full w-full divide-y md:divide-y-0 md:divide-x divide-slate-800 min-h-0 overflow-hidden ${
+            workspaceMode === 'split' ? 'grid grid-cols-1 md:grid-cols-2' : 'hidden'
+          }`}>
+            {/* Split instances can be styled or shared */}
+          </div>
 
-          {/* SINGLE MODE: Whiteboard */}
-          {workspaceMode === 'board' && (
+          {/* PERSISTENT WHITEBOARD CONTAINER (Never unmounts, never clears!) */}
+          <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
+            workspaceMode === 'board' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
+          }`}>
             <Whiteboard 
               isStudentAllowed={isStudentAllowed}
               setIsStudentAllowed={(val) => updatePermissions(val, isStudentCodeAllowed)}
               broadcast={broadcast}
               registerListener={registerListener}
             />
-          )}
+          </div>
 
-          {/* SINGLE MODE: Code Playground */}
-          {workspaceMode === 'code' && (
+          {/* PERSISTENT CODE PLAYGROUND CONTAINER (Never unmounts, never clears!) */}
+          <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
+            workspaceMode === 'code' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
+          }`}>
             <CodePlayground 
               isStudentCodeAllowed={isStudentCodeAllowed}
               setIsStudentCodeAllowed={(val) => updatePermissions(isStudentAllowed, val)}
               broadcast={broadcast}
               registerListener={registerListener}
             />
-          )}
+          </div>
+
         </div>
 
-        {/* 3. SideDock (Real-Time Video Call & Chat, exactly in same sidebar position) */}
+        {/* 3. SideDock with Live 2-Way Video Call & Google Meet Switcher */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
           workspaceMode === 'chat' ? 'flex' : 'hidden lg:flex'
         }`}>
@@ -201,11 +180,12 @@ export default function LiveClassroom() {
             googleMeetUrl={googleMeetUrl}
             isTeacher={isTeacher}
             onToggleCallMode={handleToggleCallMode}
+            currentUser={currentUser}
           />
         </div>
       </div>
 
-      {/* 4. Desktop Floating Mode Controller (Unchanged) */}
+      {/* 4. Desktop Floating Mode Controller */}
       <div className="hidden lg:flex absolute bottom-5 left-1/2 -translate-x-1/2 z-30 gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl">
         <button
           onClick={() => handleModeChange('board')}
@@ -239,7 +219,7 @@ export default function LiveClassroom() {
         </button>
       </div>
 
-      {/* 5. Mobile Navigation Bar (Unchanged) */}
+      {/* 5. Mobile Navigation Bar */}
       <nav className="lg:hidden bg-slate-900 border-t border-slate-800 px-3 py-2 flex items-center justify-around z-30 shrink-0">
         <button
           onClick={() => setWorkspaceMode('board')}

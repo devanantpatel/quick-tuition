@@ -581,6 +581,25 @@ export default function TeacherDashboard() {
         <SessionHistory history={history} />
       )}
 
+    {/* ONGOING SESSION PERSISTENT REJOIN BANNER */}
+{confirmedRequests.length > 0 && (
+  <div className="p-3.5 bg-gradient-to-r from-emerald-950/80 via-indigo-950/60 to-slate-900 border border-emerald-500/50 rounded-2xl flex items-center justify-between shadow-xl animate-pulse">
+    <div className="flex items-center gap-2.5">
+      <span className="w-3 h-3 rounded-full bg-emerald-400" />
+      <div>
+        <h4 className="text-white text-xs font-bold">You have an Active Confirmed Session!</h4>
+        <p className="text-slate-400 text-[11px]">Student is connected or waiting for your launch.</p>
+      </div>
+    </div>
+    <button
+      onClick={() => handleLaunchRoom(confirmedRequests[0])}
+      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition"
+    >
+      Resume / Launch Live Classroom
+    </button>
+  </div>
+)}
+
       {/* Requests Modal */}
       {showRequestsModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
