@@ -9,7 +9,7 @@ import {
   History, Wifi, WifiOff, Loader2, RefreshCw, ChevronUp,
   Calendar, Trash2
 } from 'lucide-react';
-
+import { supabase } from '../../lib/supabase';
 export default function StudentDashboard() {
   const { currentUser, startClassroomSession, cancelBooking } = useApp();
   const studentId = currentUser?.id;
@@ -109,9 +109,33 @@ export default function StudentDashboard() {
     }
   }, [studentId]);
 
-  useEffect(() => {
-    loadDashboardData();
-  }, [loadDashboardData]);
+ useEffect(() => {
+  if (!studentId) return;
+
+  // Pehli baar data load hoga
+  loadDashboardData();
+
+  // Supabase Realtime Listener (Bina Sync button dabaye live update hoga)
+  const channel = supabase
+    .channel(`student_bookings_${studentId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'session_bookings',
+        filter: `student_id=eq.${studentId}`
+      },
+      () => {
+        loadDashboardData(); // Jaise hi teacher accept karega, auto-reload hoga
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [studentId, loadDashboardData]);
 
   // Unique Teachers List
   const uniqueTeachersMap = new Map();
@@ -334,12 +358,12 @@ export default function StudentDashboard() {
                         {r.status === 'accepted' ? (
                           <div className="space-y-1.5">
                             <button
-                              onClick={() => handleJoinClassroom(r)}
-                              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
-                            >
-                              <Video className="w-3.5 h-3.5" />
-                              <span>Join Classroom (Tutor Ready)</span>
-                            </button>
+  onClick={() => handleJoinClassroom(r)}
+  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
+>
+  <Video className="w-3.5 h-3.5" />
+  <span>Join / Rejoin Classroom</span>
+</button>
 
                             <button
                               onClick={() => handleCancelRequest(r.id)}

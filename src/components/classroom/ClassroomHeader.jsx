@@ -1,49 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, ShieldCheck, LogOut, IndianRupee, AlertCircle } from 'lucide-react';
+import { Clock, ShieldCheck, LogOut, IndianRupee, AlertCircle, Users, Video } from 'lucide-react';
 
 export default function ClassroomHeader({ 
   subjectTitle, 
   ratePerMin = 5, 
   onEndSession,
-  broadcast,
-  registerListener 
+  peersInRoom = [],
+  currentUserRole = 'student',
+  onSwitchToGoogleMeet
 }) {
   const [secondsElapsed, setSecondsElapsed] = useState(0);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
-  // 1. Session Timer (Synced via Start Timestamp)
   useEffect(() => {
-    const sessionStartTime = Date.now();
-
     const timer = setInterval(() => {
       setSecondsElapsed((prev) => prev + 1);
     }, 1000);
-
-    // Sync remote timer if peer provides session start offset
-    if (registerListener) {
-      registerListener('classroom:timer_sync', (payload) => {
-        if (payload?.elapsedSeconds && Math.abs(payload.elapsedSeconds - secondsElapsed) > 3) {
-          setSecondsElapsed(payload.elapsedSeconds);
-        }
-      });
-    }
-
     return () => clearInterval(timer);
-  }, [registerListener, secondsElapsed]);
+  }, []);
 
-  const freeSeconds = 10 * 60; // 10 minutes free trial
+  const freeSeconds = 10 * 60;
   const isFreeTrial = secondsElapsed < freeSeconds;
 
-  // Format MM:SS
   const formatTime = (totalSec) => {
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Billable minutes calculation (post 10 mins)
   const billableMinutes = isFreeTrial ? 0 : Math.ceil((secondsElapsed - freeSeconds) / 60);
   const currentCost = billableMinutes * ratePerMin;
+
+  // Check peer presence
+  const otherRole = currentUserRole === 'teacher' ? 'student' : 'teacher';
+  const isPeerOnline = peersInRoom.some((p) => p.role === otherRole);
 
   const handleConfirmExit = () => {
     setShowExitConfirm(false);
@@ -55,20 +45,28 @@ export default function ClassroomHeader({
   return (
     <header className="bg-slate-900 border-b border-slate-800 px-4 md:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0 select-none">
       
-      {/* 1. Left: Session Subject Title & Live Pulse */}
+      {/* 1. Left: Subject & Peer Live Indicator */}
       <div className="flex items-center gap-3 min-w-0">
-        <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPeerOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
         <div className="min-w-0">
           <h2 className="font-bold text-white text-xs md:text-sm leading-tight truncate">
             {subjectTitle || '1-on-1 Mentorship Classroom'}
           </h2>
-          <span className="text-[10px] text-slate-400 block font-mono">
-            Direct Peer-to-Peer Encrypted Room
-          </span>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`text-[10px] font-mono px-2 py-0.2 rounded-full border ${
+              isPeerOnline 
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+            }`}>
+              {isPeerOnline 
+                ? `${otherRole === 'teacher' ? 'Educator' : 'Student'} Connected` 
+                : `${otherRole === 'teacher' ? 'Educator' : 'Student'} Left (Waiting...)`}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* 2. Center: Live Timer & Running Billing Meter */}
+      {/* 2. Center: Timer & Running Billing Meter */}
       <div className="flex items-center gap-2.5 bg-slate-950 border border-slate-800 px-3.5 py-1.5 rounded-xl font-mono text-xs shadow-inner">
         <div className="flex items-center gap-1.5 text-slate-200">
           <Clock className="w-3.5 h-3.5 text-indigo-400" />
@@ -90,8 +88,19 @@ export default function ClassroomHeader({
         )}
       </div>
 
-      {/* 3. Right: Leave / End Session Button */}
-      <div>
+      {/* 3. Right: Google Meet Option & Leave Room */}
+      <div className="flex items-center gap-2">
+        {onSwitchToGoogleMeet && (
+          <button
+            onClick={onSwitchToGoogleMeet}
+            className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
+            title="Switch to Google Meet if WebRTC video has slow network"
+          >
+            <Video className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Google Meet Call</span>
+          </button>
+        )}
+
         <button
           onClick={() => setShowExitConfirm(true)}
           className="bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow-sm"
@@ -110,9 +119,9 @@ export default function ClassroomHeader({
             </div>
 
             <div>
-              <h3 className="font-bold text-white text-base">End Live Session?</h3>
+              <h3 className="font-bold text-white text-base">Leave Session?</h3>
               <p className="text-xs text-slate-400 mt-1">
-                You have been in session for <strong>{formatTime(secondsElapsed)}</strong>. Leaving now will calculate your final receipt.
+                You can rejoin this room anytime from your dashboard as long as the session is still active.
               </p>
             </div>
 
@@ -121,13 +130,13 @@ export default function ClassroomHeader({
                 onClick={() => setShowExitConfirm(false)}
                 className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2.5 rounded-xl transition"
               >
-                Stay in Room
+                Stay
               </button>
               <button
                 onClick={handleConfirmExit}
                 className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2.5 rounded-xl transition shadow-lg shadow-rose-600/30"
               >
-                Yes, Leave
+                Leave
               </button>
             </div>
           </div>

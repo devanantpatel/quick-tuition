@@ -18,7 +18,7 @@ import {
   updateBookingStatus,
   cancelOrDeleteBooking
 } from '../../lib/db';
-
+import { supabase } from '../../lib/supabase';
 import TeacherMetrics from './TeacherMetrics';
 import CourseManager from './CourseManager';
 import ScheduleManager from './ScheduleManager';
@@ -200,9 +200,33 @@ export default function TeacherDashboard() {
     }
   }, [teacherId, setIsTeacherOnline]);
 
-  useEffect(() => {
-    loadTeacherData();
-  }, [loadTeacherData]);
+ useEffect(() => {
+  if (!teacherId) return;
+
+  // Pehli baar data load karein
+  loadTeacherData();
+
+  // Realtime listener (Student ke request bhejte hi live card pop-up hoga)
+  const channel = supabase
+    .channel(`teacher_bookings_${teacherId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'session_bookings',
+        filter: `teacher_id=eq.${teacherId}`
+      },
+      () => {
+        loadTeacherData(); // Auto reload without manual sync button
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [teacherId, loadTeacherData]);
 
   // Online Status Toggle
   const handleToggleOnlineStatus = async () => {

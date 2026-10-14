@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 
-export function useClassroomSync(roomId = 'live_room_default') {
+export function useClassroomSync(roomId = 'live_room_default', userRole = 'student', userName = 'User') {
   const [isConnected, setIsConnected] = useState(false);
+  const [peersInRoom, setPeersInRoom] = useState([]);
   const channelRef = useRef(null);
   const listenersRef = useRef({});
 
@@ -11,14 +12,14 @@ export function useClassroomSync(roomId = 'live_room_default') {
 
     const channelName = `room_${roomId}`;
     
-    // Create Supabase channel with broadcast enabled
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { self: false, ack: false },
+        presence: { key: userRole },
       },
     });
 
-    // Listen to all broadcast events
+    // 1. Broadcast messages (Whiteboard, Code, Chat)
     channel
       .on('broadcast', { event: '*' }, (message) => {
         const { event, payload } = message;
@@ -26,9 +27,29 @@ export function useClassroomSync(roomId = 'live_room_default') {
           listenersRef.current[event](payload);
         }
       })
-      .subscribe((status) => {
+      // 2. Track Presence (Join / Leave)
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const activeUsers = Object.keys(state).map((key) => ({
+          role: key,
+          info: state[key][0],
+        }));
+        setPeersInRoom(activeUsers);
+      })
+      .on('presence', { event: 'join' }, ({ key }) => {
+        console.log(`${key} joined the room`);
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        console.log(`${key} left the room`);
+      })
+      .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           setIsConnected(true);
+          await channel.track({
+            name: userName,
+            role: userRole,
+            joinedAt: new Date().toISOString(),
+          });
         } else {
           setIsConnected(false);
         }
@@ -37,12 +58,12 @@ export function useClassroomSync(roomId = 'live_room_default') {
     channelRef.current = channel;
 
     return () => {
+      channel.untrack();
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
-  }, [roomId]);
+  }, [roomId, userRole, userName]);
 
-  // Reliable broadcast sender
   const broadcast = useCallback((event, payload) => {
     if (channelRef.current) {
       channelRef.current.send({
@@ -53,10 +74,9 @@ export function useClassroomSync(roomId = 'live_room_default') {
     }
   }, []);
 
-  // Event listener registry
   const registerListener = useCallback((event, callback) => {
     listenersRef.current[event] = callback;
   }, []);
 
-  return { isConnected, broadcast, registerListener };
+  return { isConnected, broadcast, registerListener, peersInRoom };
 }

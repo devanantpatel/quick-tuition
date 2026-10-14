@@ -11,6 +11,8 @@ import { useClassroomSync } from '../../hooks/useClassroomSync';
 export default function LiveClassroom() {
   const { setActiveTab, currentUser, activeSession } = useApp();
   const isTeacher = currentUser?.role === 'teacher';
+  const userRole = currentUser?.role || 'student';
+  const userName = currentUser?.name || 'User';
 
   // Dynamic Room Identifier (links teacher & student to the same session channel)
   const roomId = activeSession?.id ? `session_${activeSession.id}` : 'live_room_default';
@@ -25,14 +27,23 @@ export default function LiveClassroom() {
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
 
+  // Call Mode State: 'custom' (in-app WebRTC) | 'meet' (Google Meet embedded/linked)
+  const [callMode, setCallMode] = useState('custom');
+  const [googleMeetUrl, setGoogleMeetUrl] = useState('');
+
   // Receipt Modal State
   const [showReceipt, setShowReceipt] = useState(false);
   const [finalSeconds, setFinalSeconds] = useState(0);
 
-  // Realtime Supabase Channel
-  const { isConnected, broadcast, registerListener } = useClassroomSync(roomId);
+  // Realtime Supabase Channel with Presence
+  const { isConnected, broadcast, registerListener, peersInRoom } = useClassroomSync(
+    roomId,
+    userRole,
+    userName
+  );
 
   useEffect(() => {
+    // 1. Host Permissions Listener
     registerListener('host:permissions', (data) => {
       if (!isTeacher) {
         setIsStudentAllowed(Boolean(data.isStudentAllowed));
@@ -40,10 +51,20 @@ export default function LiveClassroom() {
       }
     });
 
-    // Remote sync for workspace layout changes initiated by host
+    // 2. View Mode Remote Sync
     registerListener('host:view_mode', (data) => {
       if (!isTeacher && data.mode) {
         setWorkspaceMode(data.mode);
+      }
+    });
+
+    // 3. Call Mode (In-App vs Google Meet) Remote Sync
+    registerListener('call:mode_changed', (data) => {
+      if (data?.mode) {
+        setCallMode(data.mode);
+        if (data.meetUrl) {
+          setGoogleMeetUrl(data.meetUrl);
+        }
       }
     });
   }, [isTeacher, registerListener]);
@@ -64,6 +85,17 @@ export default function LiveClassroom() {
     }
   };
 
+  // Switch between In-App Video & Google Meet (keeps exact same sidebar UI)
+  const handleToggleCallMode = (newMode, newMeetUrl = '') => {
+    setCallMode(newMode);
+    if (newMeetUrl) setGoogleMeetUrl(newMeetUrl);
+
+    broadcast('call:mode_changed', {
+      mode: newMode,
+      meetUrl: newMeetUrl || googleMeetUrl,
+    });
+  };
+
   // Triggered when user clicks "Leave Room" or "End Session"
   const handleEndSession = (elapsedSec = 0) => {
     setFinalSeconds(elapsedSec);
@@ -78,11 +110,13 @@ export default function LiveClassroom() {
 
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-slate-950 overflow-hidden">
-      {/* 1. Header with Live Timer & Dynamic Session Meta */}
+      {/* 1. Header with Live Timer, Presence & Session Meta */}
       <ClassroomHeader
         subjectTitle={subjectTitle}
         ratePerMin={ratePerMin}
         onEndSession={handleEndSession}
+        peersInRoom={peersInRoom}
+        currentUserRole={userRole}
       />
 
       {/* Sync Status Banner */}
@@ -103,7 +137,7 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* 2. Main Simultaneous Workspace */}
+      {/* 2. Main Simultaneous Workspace (Unchanged layout) */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0">
         
         {/* Workspace Canvas / Editor Area */}
@@ -154,7 +188,7 @@ export default function LiveClassroom() {
           )}
         </div>
 
-        {/* 3. SideDock (Real-Time Video Call & Chat) */}
+        {/* 3. SideDock (Real-Time Video Call & Chat, exactly in same sidebar position) */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
           workspaceMode === 'chat' ? 'flex' : 'hidden lg:flex'
         }`}>
@@ -162,11 +196,16 @@ export default function LiveClassroom() {
             tutorName={tutorName}
             broadcast={broadcast}
             registerListener={registerListener}
+            peersInRoom={peersInRoom}
+            callMode={callMode}
+            googleMeetUrl={googleMeetUrl}
+            isTeacher={isTeacher}
+            onToggleCallMode={handleToggleCallMode}
           />
         </div>
       </div>
 
-      {/* 4. Desktop Floating Mode Controller */}
+      {/* 4. Desktop Floating Mode Controller (Unchanged) */}
       <div className="hidden lg:flex absolute bottom-5 left-1/2 -translate-x-1/2 z-30 gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl">
         <button
           onClick={() => handleModeChange('board')}
@@ -200,7 +239,7 @@ export default function LiveClassroom() {
         </button>
       </div>
 
-      {/* 5. Mobile Navigation Bar */}
+      {/* 5. Mobile Navigation Bar (Unchanged) */}
       <nav className="lg:hidden bg-slate-900 border-t border-slate-800 px-3 py-2 flex items-center justify-around z-30 shrink-0">
         <button
           onClick={() => setWorkspaceMode('board')}
