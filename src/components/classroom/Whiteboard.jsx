@@ -1,25 +1,30 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { 
   Pencil, Eraser, Wand2, Trash2, Lock, Unlock, Square, Circle, 
-  Minus, ArrowRight, ChevronLeft, ChevronRight, Plus, AlertTriangle
+  Minus, ArrowRight, ChevronLeft, ChevronRight, Plus, AlertTriangle 
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
-export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
+export default function Whiteboard({ 
+  isStudentAllowed, 
+  setIsStudentAllowed, 
+  broadcast, 
+  registerListener 
+}) {
   const { currentUser } = useApp();
   const isTeacher = currentUser?.role === 'teacher';
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
 
-  // Multi-Page State (Each page holds its own array of strokes/shapes)
+  // Multi-Page State
   const [pages, setPages] = useState({
-    1: [] // Array of stroke objects
+    1: [] // Array of normalized stroke/shape objects
   });
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  // Tool states: 'pen' | 'pixel_eraser' | 'magic_eraser' | 'rect' | 'circle' | 'line' | 'arrow'
+  // Tools: 'pen' | 'pixel_eraser' | 'magic_eraser' | 'rect' | 'circle' | 'line' | 'arrow'
   const [activeTool, setActiveTool] = useState('pen');
   const [color, setColor] = useState('#818cf8');
   const [penSize, setPenSize] = useState(3);
@@ -29,22 +34,24 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
   const [currentStroke, setCurrentStroke] = useState(null);
   const [showCleanModal, setShowCleanModal] = useState(false);
 
-  const canDraw = isTeacher || isStudentAllowed;
+  const canDraw = isTeacher || Boolean(isStudentAllowed);
 
-  // Active elements of current page
   const elements = pages[currentPage] || [];
 
-  const setPageElements = (newElements) => {
-    setPages(prev => ({ ...prev, [currentPage]: newElements }));
-  };
+  const setPageElements = useCallback((newElements, pageNum = currentPage) => {
+    setPages(prev => ({ ...prev, [pageNum]: newElements }));
+  }, [currentPage]);
 
-  // Re-draw all vector elements onto canvas
-  const redrawCanvas = () => {
+  // Redraw All Canvas Elements using Current Canvas Dimensions
+  const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+
     ctx.fillStyle = '#020617';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, w, h);
 
     elements.forEach(elem => {
       ctx.strokeStyle = elem.color;
@@ -54,42 +61,55 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
       ctx.lineJoin = 'round';
 
       if (elem.type === 'pen') {
-        if (elem.points.length < 2) return;
+        if (!elem.points || elem.points.length < 2) return;
         ctx.beginPath();
-        ctx.moveTo(elem.points[0].x, elem.points[0].y);
+        ctx.moveTo(elem.points[0].nx * w, elem.points[0].ny * h);
         for (let i = 1; i < elem.points.length; i++) {
-          ctx.lineTo(elem.points[i].x, elem.points[i].y);
+          ctx.lineTo(elem.points[i].nx * w, elem.points[i].ny * h);
         }
         ctx.stroke();
       } else if (elem.type === 'rect') {
-        ctx.strokeRect(elem.startX, elem.startY, elem.width, elem.height);
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const rw = elem.widthN * w;
+        const rh = elem.heightN * h;
+        ctx.strokeRect(sx, sy, rw, rh);
       } else if (elem.type === 'circle') {
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const r = elem.radiusN * Math.min(w, h);
         ctx.beginPath();
-        ctx.arc(elem.startX, elem.startY, elem.radius, 0, 2 * Math.PI);
+        ctx.arc(sx, sy, r, 0, 2 * Math.PI);
         ctx.stroke();
       } else if (elem.type === 'line') {
         ctx.beginPath();
-        ctx.moveTo(elem.startX, elem.startY);
-        ctx.lineTo(elem.endX, elem.endY);
+        ctx.moveTo(elem.startNx * w, elem.startNy * h);
+        ctx.lineTo(elem.endNx * w, elem.endNy * h);
         ctx.stroke();
       } else if (elem.type === 'arrow') {
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const ex = elem.endNx * w;
+        const ey = elem.endNy * h;
+
         ctx.beginPath();
-        ctx.moveTo(elem.startX, elem.startY);
-        ctx.lineTo(elem.endX, elem.endY);
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
         ctx.stroke();
 
-        const angle = Math.atan2(elem.endY - elem.startY, elem.endX - elem.startX);
+        const angle = Math.atan2(ey - sy, ex - sx);
         const head = 12 + elem.size;
         ctx.beginPath();
-        ctx.moveTo(elem.endX, elem.endY);
-        ctx.lineTo(elem.endX - head * Math.cos(angle - Math.PI / 6), elem.endY - head * Math.sin(angle - Math.PI / 6));
-        ctx.moveTo(elem.endX, elem.endY);
-        ctx.lineTo(elem.endX - head * Math.cos(angle + Math.PI / 6), elem.endY - head * Math.sin(angle + Math.PI / 6));
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - head * Math.cos(angle - Math.PI / 6), ey - head * Math.sin(angle - Math.PI / 6));
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - head * Math.cos(angle + Math.PI / 6), ey - head * Math.sin(angle + Math.PI / 6));
         ctx.stroke();
       }
     });
-  };
+  }, [elements]);
 
+  // Handle Resize
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
@@ -103,23 +123,72 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [currentPage, pages]);
+  }, [redrawCanvas]);
 
   useEffect(() => {
     redrawCanvas();
-  }, [elements]);
+  }, [redrawCanvas]);
 
-  const getCoords = (e) => {
+  // Real-Time Listeners for Remote Drawing
+  useEffect(() => {
+    if (!registerListener) return;
+
+    // 1. Receive newly added stroke/shape
+    registerListener('whiteboard:stroke_added', (payload) => {
+      if (payload && payload.element && payload.page) {
+        setPages(prev => {
+          const targetPageList = prev[payload.page] || [];
+          if (targetPageList.some(el => el.id === payload.element.id)) return prev;
+          return {
+            ...prev,
+            [payload.page]: [...targetPageList, payload.element]
+          };
+        });
+      }
+    });
+
+    // 2. Receive Magic Erase or Wipe Event
+    registerListener('whiteboard:page_update', (payload) => {
+      if (payload && payload.page !== undefined) {
+        setPages(prev => ({
+          ...prev,
+          [payload.page]: payload.elements || []
+        }));
+      }
+    });
+
+    // 3. Receive Page Navigation Sync (from Teacher)
+    registerListener('whiteboard:page_nav', (payload) => {
+      if (!isTeacher && payload) {
+        if (payload.currentPage) setCurrentPage(payload.currentPage);
+        if (payload.totalPages) setTotalPages(payload.totalPages);
+      }
+    });
+  }, [registerListener, isTeacher]);
+
+  // Coordinate normalizer (0.0 to 1.0)
+  const getNormalizedCoords = (e) => {
     const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
+    if (!canvas) return { x: 0, y: 0, nx: 0, ny: 0 };
     const rect = canvas.getBoundingClientRect();
+    let clientX, clientY;
+
     if (e.touches && e.touches[0]) {
-      return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
     }
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const nx = Math.max(0, Math.min(1, x / canvas.width));
+    const ny = Math.max(0, Math.min(1, y / canvas.height));
+
+    return { x, y, nx, ny };
   };
 
-  // Distance helper from point to line segment (For Magic Eraser Hit-Test)
   const distToSegment = (p, v, w) => {
     const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
     if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
@@ -128,27 +197,43 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
     return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
   };
 
-  // Magic Eraser: Tap or swipe to erase the targeted stroke/shape completely
+  // Magic Eraser Object Deletion
   const handleMagicErase = (pt) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const w = canvas.width;
+    const h = canvas.height;
     const threshold = 16;
+
     const remaining = elements.filter(elem => {
       if (elem.type === 'pen') {
         for (let i = 0; i < elem.points.length - 1; i++) {
-          if (distToSegment(pt, elem.points[i], elem.points[i + 1]) < threshold + elem.size) {
-            return false; // delete this entire stroke
+          const ptA = { x: elem.points[i].nx * w, y: elem.points[i].ny * h };
+          const ptB = { x: elem.points[i + 1].nx * w, y: elem.points[i + 1].ny * h };
+          if (distToSegment(pt, ptA, ptB) < threshold + elem.size) {
+            return false;
           }
         }
       } else if (elem.type === 'rect') {
-        const inX = pt.x >= Math.min(elem.startX, elem.startX + elem.width) - threshold &&
-                    pt.x <= Math.max(elem.startX, elem.startX + elem.width) + threshold;
-        const inY = pt.y >= Math.min(elem.startY, elem.startY + elem.height) - threshold &&
-                    pt.y <= Math.max(elem.startY, elem.startY + elem.height) + threshold;
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const rw = elem.widthN * w;
+        const rh = elem.heightN * h;
+        const inX = pt.x >= Math.min(sx, sx + rw) - threshold && pt.x <= Math.max(sx, sx + rw) + threshold;
+        const inY = pt.y >= Math.min(sy, sy + rh) - threshold && pt.y <= Math.max(sy, sy + rh) + threshold;
         if (inX && inY) return false;
       } else if (elem.type === 'circle') {
-        const d = Math.hypot(pt.x - elem.startX, pt.y - elem.startY);
-        if (Math.abs(d - elem.radius) < threshold + elem.size) return false;
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const r = elem.radiusN * Math.min(w, h);
+        const d = Math.hypot(pt.x - sx, pt.y - sy);
+        if (Math.abs(d - r) < threshold + elem.size) return false;
       } else if (elem.type === 'line' || elem.type === 'arrow') {
-        if (distToSegment(pt, { x: elem.startX, y: elem.startY }, { x: elem.endX, y: elem.endY }) < threshold + elem.size) {
+        const sx = elem.startNx * w;
+        const sy = elem.startNy * h;
+        const ex = elem.endNx * w;
+        const ey = elem.endNy * h;
+        if (distToSegment(pt, { x: sx, y: sy }, { x: ex, y: ey }) < threshold + elem.size) {
           return false;
         }
       }
@@ -157,44 +242,51 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
 
     if (remaining.length !== elements.length) {
       setPageElements(remaining);
+      if (broadcast) {
+        broadcast('whiteboard:page_update', { page: currentPage, elements: remaining });
+      }
     }
   };
 
   const handlePointerDown = (e) => {
     if (!canDraw) return;
-    e.preventDefault();
-    const pt = getCoords(e);
+    const pt = getNormalizedCoords(e);
     setIsDrawing(true);
 
     if (activeTool === 'magic_eraser') {
-      handleMagicErase(pt);
+      handleMagicErase({ x: pt.x, y: pt.y });
       return;
     }
 
+    const strokeId = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
     if (activeTool === 'pen') {
       setCurrentStroke({
-        id: Date.now(),
+        id: strokeId,
         type: 'pen',
-        points: [pt],
+        points: [{ nx: pt.nx, ny: pt.ny }],
         color,
         size: penSize
       });
     } else if (activeTool === 'pixel_eraser') {
       setCurrentStroke({
-        id: Date.now(),
+        id: strokeId,
         type: 'pen',
-        points: [pt],
+        points: [{ nx: pt.nx, ny: pt.ny }],
         color: '#020617',
         size: eraserSize
       });
     } else {
       setCurrentStroke({
-        id: Date.now(),
+        id: strokeId,
         type: activeTool,
-        startX: pt.x,
-        startY: pt.y,
-        endX: pt.x,
-        endY: pt.y,
+        startNx: pt.nx,
+        startNy: pt.ny,
+        endNx: pt.nx,
+        endNy: pt.ny,
+        widthN: 0,
+        heightN: 0,
+        radiusN: 0,
         color,
         size: penSize
       });
@@ -203,55 +295,58 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
 
   const handlePointerMove = (e) => {
     if (!isDrawing || !canDraw) return;
-    e.preventDefault();
-    const pt = getCoords(e);
+    const pt = getNormalizedCoords(e);
 
     if (activeTool === 'magic_eraser') {
-      handleMagicErase(pt);
+      handleMagicErase({ x: pt.x, y: pt.y });
       return;
     }
 
     if (!currentStroke) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
 
     if (currentStroke.type === 'pen') {
       const updated = {
         ...currentStroke,
-        points: [...currentStroke.points, pt]
+        points: [...currentStroke.points, { nx: pt.nx, ny: pt.ny }]
       };
       setCurrentStroke(updated);
 
-      // Fast immediate preview on canvas
-      const ctx = canvasRef.current.getContext('2d');
+      // Fast immediate local preview
       ctx.strokeStyle = updated.color;
       ctx.lineWidth = updated.size;
       ctx.lineCap = 'round';
       ctx.lineTo(pt.x, pt.y);
       ctx.stroke();
     } else {
-      let updated = { ...currentStroke, endX: pt.x, endY: pt.y };
-      if (activeTool === 'rect') {
-        updated.width = pt.x - currentStroke.startX;
-        updated.height = pt.y - currentStroke.startY;
-      } else if (activeTool === 'circle') {
-        updated.radius = Math.hypot(pt.x - currentStroke.startX, pt.y - currentStroke.startY);
-      }
+      const updated = { 
+        ...currentStroke, 
+        endNx: pt.nx, 
+        endNy: pt.ny,
+        widthN: pt.nx - currentStroke.startNx,
+        heightN: pt.ny - currentStroke.startNy,
+        radiusN: Math.hypot(pt.nx - currentStroke.startNx, pt.ny - currentStroke.startNy)
+      };
       setCurrentStroke(updated);
 
-      // Draw all + live preview of current shape
       redrawCanvas();
-      const ctx = canvasRef.current.getContext('2d');
       ctx.strokeStyle = updated.color;
       ctx.lineWidth = updated.size;
-      if (activeTool === 'rect') ctx.strokeRect(updated.startX, updated.startY, updated.width, updated.height);
-      if (activeTool === 'circle') {
+
+      if (activeTool === 'rect') {
+        ctx.strokeRect(updated.startNx * w, updated.startNy * h, updated.widthN * w, updated.heightN * h);
+      } else if (activeTool === 'circle') {
         ctx.beginPath();
-        ctx.arc(updated.startX, updated.startY, updated.radius, 0, 2 * Math.PI);
+        ctx.arc(updated.startNx * w, updated.startNy * h, updated.radiusN * Math.min(w, h), 0, 2 * Math.PI);
         ctx.stroke();
-      }
-      if (activeTool === 'line' || activeTool === 'arrow') {
+      } else if (activeTool === 'line' || activeTool === 'arrow') {
         ctx.beginPath();
-        ctx.moveTo(updated.startX, updated.startY);
-        ctx.lineTo(updated.endX, updated.endY);
+        ctx.moveTo(updated.startNx * w, updated.startNy * h);
+        ctx.lineTo(updated.endNx * w, updated.endNy * h);
         ctx.stroke();
       }
     }
@@ -259,27 +354,51 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
 
   const handlePointerUp = () => {
     if (isDrawing && currentStroke) {
-      setPageElements([...elements, currentStroke]);
+      const updatedList = [...elements, currentStroke];
+      setPageElements(updatedList);
+
+      // Broadcast complete stroke to peer
+      if (broadcast) {
+        broadcast('whiteboard:stroke_added', {
+          page: currentPage,
+          element: currentStroke
+        });
+      }
     }
     setIsDrawing(false);
     setCurrentStroke(null);
   };
 
-  // Multi-Page Handlers
+  // Multi-Page Handlers with Peer Broadcast
+  const handlePageChange = (newPage) => {
+    setCurrentPage(newPage);
+    if (isTeacher && broadcast) {
+      broadcast('whiteboard:page_nav', { currentPage: newPage, totalPages });
+    }
+  };
+
   const handleAddNewPage = () => {
     const nextPg = totalPages + 1;
     setTotalPages(nextPg);
     setPages(prev => ({ ...prev, [nextPg]: [] }));
     setCurrentPage(nextPg);
+
+    if (isTeacher && broadcast) {
+      broadcast('whiteboard:page_nav', { currentPage: nextPg, totalPages: nextPg });
+    }
   };
 
   const handleCleanPage = () => {
     setPageElements([]);
     setShowCleanModal(false);
+
+    if (broadcast) {
+      broadcast('whiteboard:page_update', { page: currentPage, elements: [] });
+    }
   };
 
   return (
-    <div ref={containerRef} className="flex-1 w-full h-full bg-[#020617] relative overflow-hidden select-none touch-none">
+    <div ref={containerRef} className="flex-1 w-full h-full bg-[#020617] relative overflow-hidden select-none touch-none min-h-0">
       
       {/* Top Floating Toolbar */}
       <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 bg-slate-900/95 backdrop-blur border border-slate-800 p-2 rounded-2xl shadow-2xl max-w-[95%]">
@@ -304,13 +423,12 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
                 <Eraser className="w-3.5 h-3.5" />
               </button>
 
-              {/* Magic Eraser: Tap/Swipe to wipe whole stroke */}
               <button
                 onClick={() => setActiveTool('magic_eraser')}
                 className={`p-1.5 rounded-lg transition flex items-center gap-1 text-[11px] font-semibold ${
                   activeTool === 'magic_eraser' ? 'bg-purple-600 text-white shadow' : 'text-purple-400 hover:text-white'
                 }`}
-                title="Magic Object Eraser: Tap any stroke/shape to erase whole object"
+                title="Magic Object Eraser: Tap any stroke to erase whole object"
               >
                 <Wand2 className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Magic</span>
@@ -318,7 +436,6 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
 
               <div className="w-[1px] h-4 bg-slate-800 mx-0.5" />
 
-              {/* Shapes */}
               <button
                 onClick={() => setActiveTool('rect')}
                 className={`p-1.5 rounded-lg transition ${activeTool === 'rect' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
@@ -420,7 +537,7 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-mono">
           <button 
             disabled={currentPage <= 1}
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
             className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
             title="Previous Page"
           >
@@ -433,7 +550,7 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
 
           <button 
             disabled={currentPage >= totalPages}
-            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
             className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
             title="Next Page"
           >
@@ -451,7 +568,7 @@ export default function Whiteboard({ isStudentAllowed, setIsStudentAllowed }) {
           )}
         </div>
 
-        {/* 5. Clean Page Button (Triggers Confirmation Modal) */}
+        {/* 5. Clean Page Button */}
         {isTeacher && (
           <button
             onClick={() => setShowCleanModal(true)}

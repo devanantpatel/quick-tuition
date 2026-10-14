@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { Play, RotateCcw, Lock, Unlock, Globe, Terminal, FileCode } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -106,7 +106,12 @@ message = "quick tuition platform"
 print("Capitalized:", message.title())
 print("Total Length:", len(message))`;
 
-export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeAllowed }) {
+export default function CodePlayground({ 
+  isStudentCodeAllowed, 
+  setIsStudentCodeAllowed, 
+  broadcast, 
+  registerListener 
+}) {
   const { currentUser } = useApp();
   const isTeacher = currentUser?.role === 'teacher';
 
@@ -125,21 +130,22 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
   const [consoleOutput, setConsoleOutput] = useState('');
   const [webPreviewHtml, setWebPreviewHtml] = useState('');
 
-  const canEdit = isTeacher || isStudentCodeAllowed;
+  const canEdit = isTeacher || Boolean(isStudentCodeAllowed);
+  const debounceTimerRef = useRef(null);
 
   // Compile Web files into combined iframe srcDoc
-  const compileWebPreview = () => {
+  const compileWebPreview = useCallback((filesToCompile = webFiles) => {
     return `
       <!DOCTYPE html>
       <html>
         <head>
-          <style>${webFiles.css}</style>
+          <style>${filesToCompile.css}</style>
         </head>
         <body>
-          ${webFiles.html}
+          ${filesToCompile.html}
           <script>
             try {
-              ${webFiles.js}
+              ${filesToCompile.js}
             } catch(err) {
               console.error(err);
             }
@@ -147,19 +153,35 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
         </body>
       </html>
     `;
-  };
+  }, [webFiles]);
 
-  // Run Code according to Tech selection
-  const handleRunCode = () => {
-    setConsoleOutput('Executing...\n');
-
-    if (selectedTech === 'web') {
-      setWebPreviewHtml(compileWebPreview());
+  // Execute Code Logic
+  const runCodeLogic = useCallback((tech = selectedTech, currentFiles = webFiles, jsCode = standaloneJs, pyCode = standalonePython) => {
+    if (tech === 'web') {
+      const compiled = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>${currentFiles.css}</style>
+          </head>
+          <body>
+            ${currentFiles.html}
+            <script>
+              try {
+                ${currentFiles.js}
+              } catch(err) {
+                console.error(err);
+              }
+            <\/script>
+          </body>
+        </html>
+      `;
+      setWebPreviewHtml(compiled);
       setConsoleOutput('Live Web project built & rendered into viewport.');
-      return;
+      return compiled;
     }
 
-    if (selectedTech === 'javascript') {
+    if (tech === 'javascript') {
       try {
         let logs = [];
         const customConsole = {
@@ -167,19 +189,22 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
           error: (...args) => logs.push('❌ Error: ' + args.join(' ')),
           warn: (...args) => logs.push('⚠️ Warning: ' + args.join(' '))
         };
-        const runFn = new Function('console', standaloneJs);
+        const runFn = new Function('console', jsCode);
         runFn(customConsole);
-        setConsoleOutput(logs.join('\n') || 'Executed successfully with no console output.');
+        const out = logs.join('\n') || 'Executed successfully with no console output.';
+        setConsoleOutput(out);
+        return out;
       } catch (err) {
-        setConsoleOutput(`❌ JavaScript Runtime Error:\n${err.message}`);
+        const errOut = `❌ JavaScript Runtime Error:\n${err.message}`;
+        setConsoleOutput(errOut);
+        return errOut;
       }
-      return;
     }
 
-    if (selectedTech === 'python') {
+    if (tech === 'python') {
       try {
         let logs = [];
-        const lines = standalonePython.split('\n');
+        const lines = pyCode.split('\n');
 
         lines.forEach(line => {
           const trimmed = line.trim();
@@ -192,7 +217,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
                 .replace(/True/g, 'true')
                 .replace(/False/g, 'false')
                 .replace(/None/g, 'null')
-                .replace(/len\(/g, '((x)=>x.length)(')                 .replace(/\.title\(\)/g, '.replace(/\\b\\w/g, c=>c.toUpperCase())');
+                .replace(/len\(/g, '((x)=>x.length)(') .replace(/\.title\(\)/g, '.replace(/\\b\\w/g, c=>c.toUpperCase())');
               logs.push(eval(sanitized));
             } catch {
               logs.push(inner.replace(/['"]/g, ''));
@@ -200,12 +225,65 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
           }
         });
 
-        setConsoleOutput(logs.join('\n') || 'Python script executed successfully.');
+        const out = logs.join('\n') || 'Python script executed successfully.';
+        setConsoleOutput(out);
+        return out;
       } catch (err) {
-        setConsoleOutput(`❌ Python Simulation Error:\n${err.message}`);
+        const errOut = `❌ Python Simulation Error:\n${err.message}`;
+        setConsoleOutput(errOut);
+        return errOut;
       }
     }
+  }, [selectedTech, webFiles, standaloneJs, standalonePython]);
+
+  // Run Code and broadcast trigger to peer
+  const handleRunCode = () => {
+    setConsoleOutput('Executing...\n');
+    const result = runCodeLogic();
+
+    if (broadcast) {
+      broadcast('code:run_triggered', {
+        tech: selectedTech,
+        resultOutput: typeof result === 'string' ? result : ''
+      });
+    }
   };
+
+  // Real-Time Listeners
+  useEffect(() => {
+    if (!registerListener) return;
+
+    // 1. Code Changes
+    registerListener('code:content_update', (payload) => {
+      if (!payload) return;
+      if (payload.tech === 'web' && payload.webFiles) {
+        setWebFiles(payload.webFiles);
+      } else if (payload.tech === 'javascript' && payload.code !== undefined) {
+        setStandaloneJs(payload.code);
+      } else if (payload.tech === 'python' && payload.code !== undefined) {
+        setStandalonePython(payload.code);
+      }
+    });
+
+    // 2. Environment / Tab Change
+    registerListener('code:env_switch', (payload) => {
+      if (!payload) return;
+      if (payload.selectedTech) setSelectedTech(payload.selectedTech);
+      if (payload.activeWebFile) setActiveWebFile(payload.activeWebFile);
+    });
+
+    // 3. Remote Run Trigger
+    registerListener('code:run_triggered', (payload) => {
+      if (!payload) return;
+      runCodeLogic(payload.tech);
+    });
+
+    // 4. Clear Trigger
+    registerListener('code:clear_output', () => {
+      setConsoleOutput('');
+      setWebPreviewHtml('');
+    });
+  }, [registerListener, runCodeLogic]);
 
   // Determine current code & language for Monaco
   let currentMonacoCode = '';
@@ -222,37 +300,82 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
     currentMonacoLang = 'python';
   }
 
+  // Handle Editor Typing with Debounced Broadcast
   const handleEditorChange = (val) => {
     if (!canEdit) return;
+    const nextVal = val || '';
+
+    let nextWebFiles = webFiles;
+    let nextJs = standaloneJs;
+    let nextPy = standalonePython;
+
     if (selectedTech === 'web') {
-      setWebFiles(prev => ({ ...prev, [activeWebFile]: val || '' }));
+      nextWebFiles = { ...webFiles, [activeWebFile]: nextVal };
+      setWebFiles(nextWebFiles);
     } else if (selectedTech === 'javascript') {
-      setStandaloneJs(val || '');
+      nextJs = nextVal;
+      setStandaloneJs(nextJs);
     } else if (selectedTech === 'python') {
-      setStandalonePython(val || '');
+      nextPy = nextVal;
+      setStandalonePython(nextPy);
+    }
+
+    if (broadcast) {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = setTimeout(() => {
+        broadcast('code:content_update', {
+          tech: selectedTech,
+          activeFile: activeWebFile,
+          webFiles: nextWebFiles,
+          code: selectedTech === 'javascript' ? nextJs : nextPy
+        });
+      }, 300);
+    }
+  };
+
+  // Environment Switch Handler
+  const handleTechChange = (tech) => {
+    setSelectedTech(tech);
+    setConsoleOutput('');
+    if (tech === 'web') setWebPreviewHtml(compileWebPreview());
+
+    if (broadcast) {
+      broadcast('code:env_switch', { selectedTech: tech, activeWebFile });
+    }
+  };
+
+  // Web Tab Switch Handler
+  const handleWebFileChange = (fileName) => {
+    setActiveWebFile(fileName);
+    if (broadcast) {
+      broadcast('code:env_switch', { selectedTech, activeWebFile: fileName });
+    }
+  };
+
+  // Clear Output
+  const handleClearOutput = () => {
+    setConsoleOutput('');
+    setWebPreviewHtml('');
+    if (broadcast) {
+      broadcast('code:clear_output', {});
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row h-full bg-slate-950 overflow-hidden font-mono text-xs">
+    <div className="flex-1 flex flex-col md:flex-row h-full bg-slate-950 overflow-hidden font-mono text-xs min-h-0">
       
-      {/* LEFT: VS Code Monaco Editor Area */}
+      {/* LEFT: Monaco Editor Workspace */}
       <div className="flex-1 flex flex-col border-b md:border-b-0 md:border-r border-slate-800 min-h-0">
         
-        {/* Top Control Bar: Language Selection Dropdown + Run Button */}
-        <div className="bg-slate-900 px-4 py-2 flex flex-wrap items-center justify-between border-b border-slate-800 gap-2">
+        {/* Top Control Bar */}
+        <div className="bg-slate-900 px-4 py-2 flex flex-wrap items-center justify-between border-b border-slate-800 gap-2 shrink-0">
           
           <div className="flex items-center gap-2">
-            {/* Environment Dropdown */}
             <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
               <span className="text-[11px] text-slate-400 font-sans font-semibold">Environment:</span>
               <select
                 value={selectedTech}
-                onChange={(e) => {
-                  setSelectedTech(e.target.value);
-                  setConsoleOutput('');
-                  if (e.target.value === 'web') setWebPreviewHtml(compileWebPreview());
-                }}
+                onChange={(e) => handleTechChange(e.target.value)}
                 className="bg-transparent text-white font-sans font-bold text-xs focus:outline-none cursor-pointer"
               >
                 <option value="web" className="bg-slate-900">🌐 Web Stack (HTML + CSS + JS)</option>
@@ -261,7 +384,6 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
               </select>
             </div>
 
-            {/* Read-only badge */}
             {!canEdit && (
               <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1 font-sans font-semibold">
                 <Lock className="w-3 h-3" /> Read Only
@@ -283,7 +405,6 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
               </button>
             )}
 
-            {/* Run Button */}
             <button
               onClick={handleRunCode}
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-sans text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow-md shadow-emerald-600/20"
@@ -296,9 +417,9 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
 
         {/* Multi-File Tabs (Only for Web Environment) */}
         {selectedTech === 'web' && (
-          <div className="flex bg-slate-950 border-b border-slate-800/80 px-2 text-xs font-mono">
+          <div className="flex bg-slate-950 border-b border-slate-800/80 px-2 text-xs font-mono shrink-0">
             <button
-              onClick={() => setActiveWebFile('html')}
+              onClick={() => handleWebFileChange('html')}
               className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 font-semibold transition ${
                 activeWebFile === 'html' ? 'border-orange-500 text-orange-400 bg-slate-900' : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
@@ -307,7 +428,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
             </button>
 
             <button
-              onClick={() => setActiveWebFile('css')}
+              onClick={() => handleWebFileChange('css')}
               className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 font-semibold transition ${
                 activeWebFile === 'css' ? 'border-cyan-500 text-cyan-400 bg-slate-900' : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
@@ -316,7 +437,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
             </button>
 
             <button
-              onClick={() => setActiveWebFile('js')}
+              onClick={() => handleWebFileChange('js')}
               className={`px-3 py-1.5 flex items-center gap-1.5 border-b-2 font-semibold transition ${
                 activeWebFile === 'js' ? 'border-amber-500 text-amber-400 bg-slate-900' : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
@@ -326,7 +447,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
           </div>
         )}
 
-        {/* Real VS Code Monaco Editor Instance */}
+        {/* Monaco Editor Instance */}
         <div className="flex-1 w-full h-full min-h-0">
           <Editor
             height="100%"
@@ -351,9 +472,9 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
         </div>
       </div>
 
-      {/* RIGHT: Output Panel (Live Iframe Viewport for Web, Terminal Console for JS/Python) */}
-      <div className="w-full md:w-80 lg:w-96 bg-slate-950 flex flex-col border-t md:border-t-0 border-slate-800 min-h-0">
-        <div className="bg-slate-900 px-4 py-2 border-b border-slate-800 flex justify-between items-center">
+      {/* RIGHT: Output Panel */}
+      <div className="w-full md:w-80 lg:w-96 bg-slate-950 flex flex-col border-t md:border-t-0 border-slate-800 min-h-0 shrink-0">
+        <div className="bg-slate-900 px-4 py-2 border-b border-slate-800 flex justify-between items-center shrink-0">
           <div className="flex items-center gap-1.5">
             {selectedTech === 'web' ? <Globe className="w-3.5 h-3.5 text-cyan-400" /> : <Terminal className="w-3.5 h-3.5 text-emerald-400" />}
             <span className="text-slate-300 font-semibold text-[11px] font-sans">
@@ -362,7 +483,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
           </div>
 
           <button 
-            onClick={() => { setConsoleOutput(''); setWebPreviewHtml(''); }} 
+            onClick={handleClearOutput} 
             className="text-slate-500 hover:text-white p-1"
             title="Clear Console / View"
           >
@@ -371,7 +492,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
         </div>
 
         {selectedTech === 'web' ? (
-          <div className="flex-1 w-full h-full bg-white overflow-hidden relative">
+          <div className="flex-1 w-full h-full bg-white overflow-hidden relative min-h-0">
             <iframe
               title="Web Sandbox Preview"
               srcDoc={webPreviewHtml || compileWebPreview()}
@@ -380,7 +501,7 @@ export default function CodePlayground({ isStudentCodeAllowed, setIsStudentCodeA
             />
           </div>
         ) : (
-          <div className="flex-1 p-3.5 text-emerald-400 overflow-y-auto whitespace-pre-wrap leading-relaxed text-[11px] bg-[#020617] font-mono select-text">
+          <div className="flex-1 p-3.5 text-emerald-400 overflow-y-auto whitespace-pre-wrap leading-relaxed text-[11px] bg-[#020617] font-mono select-text min-h-0">
             {consoleOutput || '// Click "Run Script" to inspect terminal logs & errors.'}
           </div>
         )}

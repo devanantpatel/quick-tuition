@@ -7,11 +7,11 @@ import {
   Search, Users, Filter, BookOpen, Clock, Video, 
   CheckCircle2, AlertCircle, Sparkles, X, ChevronDown, 
   History, Wifi, WifiOff, Loader2, RefreshCw, ChevronUp,
-  Calendar
+  Calendar, Trash2
 } from 'lucide-react';
 
 export default function StudentDashboard() {
-  const { currentUser, setActiveTab } = useApp();
+  const { currentUser, startClassroomSession, cancelBooking } = useApp();
   const studentId = currentUser?.id;
 
   // Real Database States
@@ -75,10 +75,11 @@ export default function StudentDashboard() {
           id: b.id,
           subject: b.subject_title || 'Session Request',
           topic: b.topic || 'General Doubt',
-          time: b.start_time || 'Flexible Timing',
+          time: b.start_time || b.slot_time || 'Flexible Timing',
           status: b.status,
           teacherName: b.teacher_name || 'Assigned Educator',
           teacherId: b.teacher_id,
+          rate: b.rate || 5,
           createdAt: b.created_at ? new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent',
           date: b.created_at ? new Date(b.created_at).toLocaleDateString() : 'Today'
         }));
@@ -149,14 +150,14 @@ export default function StudentDashboard() {
 
     try {
       const created = await createBooking({
-  student_id: studentId,
-  teacher_id: selectedCourseForBooking?.teacherId,
-  subject_title: bookingData.subject || selectedCourseForBooking?.title,
-  topic: bookingData.topic,
-  start_time: bookingData.time,
-  slot_time: bookingData.time, // <--- slot_time bhi pass karein
-  status: 'pending'
-});
+        student_id: studentId,
+        teacher_id: selectedCourseForBooking?.teacherId,
+        subject_title: bookingData.subject || selectedCourseForBooking?.title,
+        topic: bookingData.topic,
+        start_time: bookingData.time,
+        slot_time: bookingData.time,
+        status: 'pending'
+      });
 
       const newCard = {
         id: created?.id || Date.now(),
@@ -165,6 +166,8 @@ export default function StudentDashboard() {
         time: bookingData.time,
         status: 'pending',
         teacherName: selectedCourseForBooking?.teacherName || 'Assigned Educator',
+        teacherId: selectedCourseForBooking?.teacherId,
+        rate: selectedCourseForBooking?.rate || 5,
         createdAt: 'Just now',
         date: 'Today'
       };
@@ -179,13 +182,24 @@ export default function StudentDashboard() {
     }
   };
 
-  // Permanent Cancel Logic (DB + Local State)
+  // Permanent Cancel Logic (Works for Pending, Declined, AND Accepted)
   const handleCancelRequest = async (requestId) => {
     setRequestsList(prev => prev.filter(r => r.id !== requestId));
     try {
-      await cancelOrDeleteBooking(requestId);
+      if (cancelBooking) {
+        await cancelBooking(requestId);
+      } else {
+        await cancelOrDeleteBooking(requestId);
+      }
     } catch (err) {
       console.error('Failed to cancel request in DB:', err);
+    }
+  };
+
+  // Direct dynamic room launcher
+  const handleJoinClassroom = (booking) => {
+    if (startClassroomSession) {
+      startClassroomSession(booking);
     }
   };
 
@@ -267,7 +281,7 @@ export default function StudentDashboard() {
         </div>
 
         {!isTopSectionCollapsed && (
-          <div className="max-h-64 overflow-y-auto pr-1">
+          <div className="max-h-72 overflow-y-auto pr-1">
             {topSectionView === 'requests' && (
               requestsList.length === 0 ? (
                 <div className="p-6 rounded-xl bg-slate-950 border border-slate-800 text-center text-slate-500 text-xs">
@@ -316,15 +330,25 @@ export default function StudentDashboard() {
                         </div>
                       </div>
 
-                      <div>
+                      <div className="space-y-1.5 pt-2 border-t border-slate-900">
                         {r.status === 'accepted' ? (
-                          <button
-                            onClick={() => setActiveTab('classroom')}
-                            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
-                          >
-                            <Video className="w-3.5 h-3.5" />
-                            <span>Join Classroom (Tutor Ready)</span>
-                          </button>
+                          <div className="space-y-1.5">
+                            <button
+                              onClick={() => handleJoinClassroom(r)}
+                              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/30 animate-pulse"
+                            >
+                              <Video className="w-3.5 h-3.5" />
+                              <span>Join Classroom (Tutor Ready)</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleCancelRequest(r.id)}
+                              className="w-full text-center text-[10px] text-slate-500 hover:text-rose-400 py-1 flex items-center justify-center gap-1 transition"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Cancel & Remove Session</span>
+                            </button>
+                          </div>
                         ) : r.status === 'declined' ? (
                           <div className="flex items-center justify-between pt-1">
                             <span className="text-[10px] text-rose-400">Educator unavailable</span>

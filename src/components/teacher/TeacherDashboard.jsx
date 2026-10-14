@@ -15,7 +15,8 @@ import {
   updateTeacherOnlineStatus,
   getProfile,
   fetchUserBookings,
-  updateBookingStatus
+  updateBookingStatus,
+  cancelOrDeleteBooking
 } from '../../lib/db';
 
 import TeacherMetrics from './TeacherMetrics';
@@ -56,7 +57,8 @@ export default function TeacherDashboard() {
     currentUser,
     isTeacherOnline, 
     setIsTeacherOnline, 
-    setActiveTab 
+    startClassroomSession,
+    cancelBooking
   } = useApp();
 
   const teacherId = currentUser?.id;
@@ -151,10 +153,12 @@ export default function TeacherDashboard() {
         setDbBookingsList(dbBookings.map(b => ({
           id: b.id,
           studentName: b.student_name || 'Student',
+          student_id: b.student_id,
           subject: b.subject_title || 'Session Request',
           topic: b.topic || 'Doubt Clearing',
-          time: b.start_time || 'Flexible Timing',
+          time: b.start_time || b.slot_time || 'Flexible Timing',
           status: b.status || 'pending',
+          rate: b.rate || 5,
           createdAt: b.created_at ? new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent'
         })));
 
@@ -351,18 +355,14 @@ export default function TeacherDashboard() {
   const pendingRequests = dbBookingsList.filter(r => r.status === 'pending');
   const confirmedRequests = dbBookingsList.filter(r => r.status === 'accepted');
 
-  // Accept Request Handler (Direct Database Sync)
+  // Accept Request Handler
   const handleAcceptRequest = async (requestId) => {
-    // 1. Optimistic UI update
     setDbBookingsList(prev => prev.map(r => r.id === requestId ? { ...r, status: 'accepted' } : r));
     setShowRequestsModal(false);
     setDashboardTab('confirmed');
 
-    // 2. Direct Supabase Database Update
     try {
-      console.log('Updating booking to accepted for ID:', requestId);
       await updateBookingStatus(requestId, 'accepted');
-      console.log('Booking successfully marked as accepted in DB');
     } catch (err) {
       console.error('Failed to accept booking in DB:', err);
       alert('Accept failed in DB: ' + err.message);
@@ -374,12 +374,37 @@ export default function TeacherDashboard() {
     setDbBookingsList(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
 
     try {
-      console.log('Updating booking to declined for ID:', requestId);
       await updateBookingStatus(requestId, 'declined');
-      console.log('Booking successfully marked as declined in DB');
     } catch (err) {
       console.error('Failed to decline booking in DB:', err);
       alert('Decline failed in DB: ' + err.message);
+    }
+  };
+
+  // Cancel Confirmed Session Handler
+  const handleCancelConfirmedSession = async (requestId) => {
+    setDbBookingsList(prev => prev.filter(r => r.id !== requestId));
+    try {
+      if (cancelBooking) {
+        await cancelBooking(requestId);
+      } else {
+        await cancelOrDeleteBooking(requestId);
+      }
+    } catch (err) {
+      console.error('Failed to cancel confirmed session in DB:', err);
+    }
+  };
+
+  // Direct dynamic room launcher for Teacher
+  const handleLaunchRoom = (session) => {
+    const roomPayload = {
+      ...session,
+      tutorUpi: upiId,
+      tutorQr: qrCodeUrl
+    };
+
+    if (startClassroomSession) {
+      startClassroomSession(roomPayload);
     }
   };
 
@@ -523,7 +548,8 @@ export default function TeacherDashboard() {
       {dashboardTab === 'confirmed' && (
         <ConfirmedSessions 
           confirmedRequests={confirmedRequests}
-          onLaunchRoom={() => setActiveTab('classroom')}
+          onLaunchRoom={handleLaunchRoom}
+          onCancelSession={handleCancelConfirmedSession}
         />
       )}
 

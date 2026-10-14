@@ -148,7 +148,6 @@ export async function deleteTeacherScheduleSlot(slotId) {
 export async function createBooking(bookingData) {
   const payload = {
     ...bookingData,
-    // Dono column names provide kar rahe hain taaki DB me jo bhi column ho, null na jaye
     start_time: bookingData.start_time || bookingData.slot_time || 'Flexible Timing',
     slot_time: bookingData.slot_time || bookingData.start_time || 'Flexible Timing'
   };
@@ -171,7 +170,6 @@ export async function fetchUserBookings(userId, role) {
     query = query.eq('student_id', userId);
   }
   
-  // Cancelled records ko active list se filter out karein
   const { data, error } = await query
     .neq('status', 'cancelled')
     .order('created_at', { ascending: false });
@@ -212,11 +210,26 @@ export async function cancelOrDeleteBooking(bookingId) {
 
 // --- Invoices ---
 export async function saveSessionInvoice(invoiceData) {
+  const payload = {
+    booking_id: invoiceData.booking_id,
+    student_id: invoiceData.student_id,
+    teacher_id: invoiceData.teacher_id,
+    total_seconds: invoiceData.total_seconds || (invoiceData.duration_mins ? invoiceData.duration_mins * 60 : 0),
+    billable_amount: invoiceData.billable_amount ?? invoiceData.total_amount ?? 0,
+    rating: invoiceData.rating || 5,
+    feedback: invoiceData.feedback || '',
+    payment_status: invoiceData.payment_status || 'paid'
+  };
+
   const { data, error } = await supabase
     .from('session_invoices')
-    .insert(invoiceData)
+    .insert(payload)
     .select()
     .single();
-  if (error) throw error;
+
+  if (error) {
+    console.error('saveSessionInvoice error:', error);
+    throw error;
+  }
   return data;
 }

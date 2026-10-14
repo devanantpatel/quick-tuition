@@ -7,7 +7,8 @@ import {
   createSubject, 
   createBooking, 
   fetchUserBookings, 
-  updateBookingStatus 
+  updateBookingStatus,
+  cancelOrDeleteBooking
 } from '../lib/db';
 
 const AppContext = createContext();
@@ -18,6 +19,9 @@ export function AppProvider({ children }) {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authDefaultRole, setAuthDefaultRole] = useState('student');
   const [isTeacherOnline, setIsTeacherOnline] = useState(true);
+
+  // Active Live Classroom Session (Binds Teacher & Student to same dynamic Room ID)
+  const [activeSession, setActiveSession] = useState(null);
 
   // Database Data States
   const [teacherSubjects, setTeacherSubjects] = useState([]);
@@ -66,7 +70,6 @@ export function AppProvider({ children }) {
   const loadSubjects = async () => {
     const data = await fetchAllSubjects();
     if (data && data.length > 0) {
-      // Normalize subject format for the UI
       const formatted = data.map((sub) => ({
         id: sub.id,
         title: sub.title,
@@ -97,14 +100,13 @@ export function AppProvider({ children }) {
 
     loadBookings();
 
-    // Realtime Postgres Change Listener for Instant Booking Notification
     const bookingChannel = supabase
       .channel('public:session_bookings')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'session_bookings' },
         () => {
-          loadBookings(); // Automatically refresh bookings on insert/update
+          loadBookings();
         }
       )
       .subscribe();
@@ -137,7 +139,6 @@ export function AppProvider({ children }) {
     if (error) throw error;
     if (!data.user) throw new Error('Registration failed');
 
-    // Create profile row in Postgres
     const profileData = {
       id: data.user.id,
       name,
@@ -157,6 +158,7 @@ export function AppProvider({ children }) {
   const logoutUser = async () => {
     await supabase.auth.signOut();
     setCurrentUser(null);
+    setActiveSession(null);
     setActiveTab('landing');
   };
 
@@ -179,7 +181,7 @@ export function AppProvider({ children }) {
     if (!currentUser) return;
     const inserted = await createBooking({
       student_id: currentUser.id,
-      teacher_id: newReq.teacherId || currentUser.id, // Fallback to current tutor ID
+      teacher_id: newReq.teacherId || currentUser.id,
       subject_title: newReq.subject,
       topic: newReq.topic,
       slot_time: newReq.time,
@@ -196,6 +198,18 @@ export function AppProvider({ children }) {
     );
   };
 
+  // Cancel Booking (Student or Teacher)
+  const cancelBooking = async (id) => {
+    await cancelOrDeleteBooking(id);
+    setRequests((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  // Helper to Launch Live Classroom
+  const startClassroomSession = (booking) => {
+    setActiveSession(booking);
+    setActiveTab('classroom');
+  };
+
   const openAuthModal = (role = 'student') => {
     setAuthDefaultRole(role);
     setIsAuthModalOpen(true);
@@ -205,9 +219,13 @@ export function AppProvider({ children }) {
     <AppContext.Provider
       value={{
         currentUser,
+        setCurrentUser,
         isLoading,
         activeTab,
         setActiveTab,
+        activeSession,
+        setActiveSession,
+        startClassroomSession,
         isAuthModalOpen,
         setIsAuthModalOpen,
         authDefaultRole,
@@ -223,6 +241,7 @@ export function AppProvider({ children }) {
         requests,
         addRequest,
         updateRequestStatus: updateStatus,
+        cancelBooking,
         loadSubjects
       }}
     >
