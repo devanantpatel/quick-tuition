@@ -134,7 +134,8 @@ export default function TeacherDashboard() {
           createdAt: b.created_at ? new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent'
         })));
 
-        const completed = dbBookings.filter(b => b.status === 'completed' || b.room_status === 'destroyed');
+        
+const completed = dbBookings.filter(b => b.status === 'completed' || b.room_status === 'destroyed');
         let sumEarned = 0;
         let sumMins = 0;
 
@@ -151,7 +152,8 @@ export default function TeacherDashboard() {
             topic: item.topic || 'Doubt Clearing',
             duration: `${mins} mins`,
             earned: `₹${amt.toFixed(2)}`,
-            date: item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Recent'
+            date: item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Recent',
+            whiteboardNotes: item.whiteboard_notes || null // YEH MISSING THA! Ab Teacher Dashboard me bhi View Notes aayega
           };
         });
 

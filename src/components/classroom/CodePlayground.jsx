@@ -249,11 +249,11 @@ export default function CodePlayground({
     }
   };
 
-  // Real-Time Listeners
+  // Real-Time Listeners (Live Updates + Rejoin Full State Sync)
   useEffect(() => {
     if (!registerListener) return;
 
-    // 1. Code Changes
+    // 1. Live Typing Updates
     registerListener('code:content_update', (payload) => {
       if (!payload) return;
       if (payload.tech === 'web' && payload.webFiles) {
@@ -283,7 +283,40 @@ export default function CodePlayground({
       setConsoleOutput('');
       setWebPreviewHtml('');
     });
-  }, [registerListener, runCodeLogic]);
+
+    // 5. Rejoin State Provider: Jab koi doosra user rejoin kare aur full state maange
+    registerListener('code:request_full_state', () => {
+      if (broadcast) {
+        broadcast('code:sync_full_state', {
+          selectedTech,
+          activeWebFile,
+          webFiles,
+          standaloneJs,
+          standalonePython
+        });
+      }
+    });
+
+    // 6. Rejoin State Receiver: Samne wale se full state lekar update kare
+    registerListener('code:sync_full_state', (payload) => {
+      if (!payload) return;
+      if (payload.selectedTech) setSelectedTech(payload.selectedTech);
+      if (payload.activeWebFile) setActiveWebFile(payload.activeWebFile);
+      if (payload.webFiles) setWebFiles(payload.webFiles);
+      if (payload.standaloneJs !== undefined) setStandaloneJs(payload.standaloneJs);
+      if (payload.standalonePython !== undefined) setStandalonePython(payload.standalonePython);
+    });
+  }, [registerListener, runCodeLogic, broadcast, selectedTech, activeWebFile, webFiles, standaloneJs, standalonePython]);
+
+  // Rejoin hone par 800ms baad room se full code state maango
+  useEffect(() => {
+    if (broadcast) {
+      const syncTimer = setTimeout(() => {
+        broadcast('code:request_full_state', {});
+      }, 800);
+      return () => clearTimeout(syncTimer);
+    }
+  }, [broadcast]);
 
   // Determine current code & language for Monaco
   let currentMonacoCode = '';
@@ -400,7 +433,7 @@ export default function CodePlayground({
                   isStudentCodeAllowed ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-400' : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                {isStudentCodeAllowed ? <Unlock className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                {isStudentCodeAllowed ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
                 <span>{isStudentCodeAllowed ? 'Student Edit: ON' : 'Student Edit: OFF'}</span>
               </button>
             )}

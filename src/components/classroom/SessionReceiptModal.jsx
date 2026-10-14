@@ -9,8 +9,8 @@ export default function SessionReceiptModal({
   tutorName = 'Educator',
   subjectTitle = 'Mentorship Session',
   userRole = 'student',
-  onCloseAndRedirect,
-  activeSession
+  activeSession,
+  onCloseAndRedirect
 }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasPaidMarked, setHasPaidMarked] = useState(false);
@@ -32,7 +32,7 @@ export default function SessionReceiptModal({
     setIsSubmitting(true);
     try {
       if (activeSession?.id) {
-        // Save duration and final status to database
+        // Sirf status, duration aur payment update karein bina whiteboard notes ko chhede
         await supabase
           .from('session_bookings')
           .update({

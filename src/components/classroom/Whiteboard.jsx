@@ -11,18 +11,26 @@ export default function Whiteboard({
   broadcast, 
   registerListener 
 }) {
-  const { currentUser } = useApp();
+  const { currentUser, activeSession } = useApp();
   const isTeacher = currentUser?.role === 'teacher';
+  const roomId = activeSession?.id ? `board_cache_${activeSession.id}` : 'board_cache_default';
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
 
-  // Multi-Page State
-  const [pages, setPages] = useState({
-    1: [] // Array of normalized stroke/shape objects
+  // 1. Initial State from Local Storage (Zero Data Loss on Rejoin)
+  const [pages, setPages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(roomId);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load board cache:', e);
+    }
+    return { 1: [] };
   });
+
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [totalPages, setTotalPages] = useState(() => Object.keys(pages).length || 1);
 
   // Tools: 'pen' | 'pixel_eraser' | 'magic_eraser' | 'rect' | 'circle' | 'line' | 'arrow'
   const [activeTool, setActiveTool] = useState('pen');
@@ -35,14 +43,22 @@ export default function Whiteboard({
   const [showCleanModal, setShowCleanModal] = useState(false);
 
   const canDraw = isTeacher || Boolean(isStudentAllowed);
-
   const elements = pages[currentPage] || [];
+
+  // Auto-Save to Local Cache on Every Stroke Update
+  useEffect(() => {
+    try {
+      localStorage.setItem(roomId, JSON.stringify(pages));
+    } catch (e) {
+      console.warn('Storage quota error:', e);
+    }
+  }, [pages, roomId]);
 
   const setPageElements = useCallback((newElements, pageNum = currentPage) => {
     setPages(prev => ({ ...prev, [pageNum]: newElements }));
   }, [currentPage]);
 
-  // Redraw All Canvas Elements using Current Canvas Dimensions
+  // Redraw Canvas
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -69,17 +85,11 @@ export default function Whiteboard({
         }
         ctx.stroke();
       } else if (elem.type === 'rect') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
-        const rw = elem.widthN * w;
-        const rh = elem.heightN * h;
-        ctx.strokeRect(sx, sy, rw, rh);
+        ctx.strokeRect(elem.startNx * w, elem.startNy * h, elem.widthN * w, elem.heightN * h);
       } else if (elem.type === 'circle') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
         const r = elem.radiusN * Math.min(w, h);
         ctx.beginPath();
-        ctx.arc(sx, sy, r, 0, 2 * Math.PI);
+        ctx.arc(elem.startNx * w, elem.startNy * h, r, 0, 2 * Math.PI);
         ctx.stroke();
       } else if (elem.type === 'line') {
         ctx.beginPath();
@@ -109,7 +119,6 @@ export default function Whiteboard({
     });
   }, [elements]);
 
-  // Handle Resize
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
@@ -129,11 +138,10 @@ export default function Whiteboard({
     redrawCanvas();
   }, [redrawCanvas]);
 
-  // Real-Time Listeners for Remote Drawing
+  // Real-Time Supabase Synchronization
   useEffect(() => {
     if (!registerListener) return;
 
-    // 1. Receive newly added stroke/shape
     registerListener('whiteboard:stroke_added', (payload) => {
       if (payload && payload.element && payload.page) {
         setPages(prev => {
@@ -147,7 +155,6 @@ export default function Whiteboard({
       }
     });
 
-    // 2. Receive Magic Erase or Wipe Event
     registerListener('whiteboard:page_update', (payload) => {
       if (payload && payload.page !== undefined) {
         setPages(prev => ({
@@ -157,29 +164,46 @@ export default function Whiteboard({
       }
     });
 
-    // 3. Receive Page Navigation Sync (from Teacher)
     registerListener('whiteboard:page_nav', (payload) => {
       if (!isTeacher && payload) {
         if (payload.currentPage) setCurrentPage(payload.currentPage);
         if (payload.totalPages) setTotalPages(payload.totalPages);
       }
     });
-  }, [registerListener, isTeacher]);
+
+    // Rejoin Peer Request & Response
+    registerListener('whiteboard:request_full_state', () => {
+      if (broadcast && Object.keys(pages).length > 0) {
+        broadcast('whiteboard:sync_full_state', { pages, currentPage, totalPages });
+      }
+    });
+
+    registerListener('whiteboard:sync_full_state', (payload) => {
+      if (payload && payload.pages) {
+        setPages(payload.pages);
+        if (payload.currentPage) setCurrentPage(payload.currentPage);
+        if (payload.totalPages) setTotalPages(payload.totalPages);
+      }
+    });
+  }, [registerListener, isTeacher, broadcast, pages, currentPage, totalPages]);
+
+  // Request Peer Sync upon entering
+  useEffect(() => {
+    if (broadcast) {
+      const timer = setTimeout(() => {
+        broadcast('whiteboard:request_full_state', {});
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [broadcast]);
 
   // Coordinate normalizer (0.0 to 1.0)
   const getNormalizedCoords = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0, nx: 0, ny: 0 };
     const rect = canvas.getBoundingClientRect();
-    let clientX, clientY;
-
-    if (e.touches && e.touches[0]) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
 
     const x = clientX - rect.left;
     const y = clientY - rect.top;
@@ -197,7 +221,6 @@ export default function Whiteboard({
     return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
   };
 
-  // Magic Eraser Object Deletion
   const handleMagicErase = (pt) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -210,32 +233,26 @@ export default function Whiteboard({
         for (let i = 0; i < elem.points.length - 1; i++) {
           const ptA = { x: elem.points[i].nx * w, y: elem.points[i].ny * h };
           const ptB = { x: elem.points[i + 1].nx * w, y: elem.points[i + 1].ny * h };
-          if (distToSegment(pt, ptA, ptB) < threshold + elem.size) {
-            return false;
-          }
+          if (distToSegment(pt, ptA, ptB) < threshold + elem.size) return false;
         }
       } else if (elem.type === 'rect') {
         const sx = elem.startNx * w;
         const sy = elem.startNy * h;
         const rw = elem.widthN * w;
         const rh = elem.heightN * h;
-        const inX = pt.x >= Math.min(sx, sx + rw) - threshold && pt.x <= Math.max(sx, sx + rw) + threshold;
-        const inY = pt.y >= Math.min(sy, sy + rh) - threshold && pt.y <= Math.max(sy, sy + rh) + threshold;
-        if (inX && inY) return false;
+        if (pt.x >= Math.min(sx, sx + rw) - threshold && pt.x <= Math.max(sx, sx + rw) + threshold &&
+            pt.y >= Math.min(sy, sy + rh) - threshold && pt.y <= Math.max(sy, sy + rh) + threshold) return false;
       } else if (elem.type === 'circle') {
         const sx = elem.startNx * w;
         const sy = elem.startNy * h;
         const r = elem.radiusN * Math.min(w, h);
-        const d = Math.hypot(pt.x - sx, pt.y - sy);
-        if (Math.abs(d - r) < threshold + elem.size) return false;
+        if (Math.abs(Math.hypot(pt.x - sx, pt.y - sy) - r) < threshold + elem.size) return false;
       } else if (elem.type === 'line' || elem.type === 'arrow') {
         const sx = elem.startNx * w;
         const sy = elem.startNy * h;
         const ex = elem.endNx * w;
         const ey = elem.endNy * h;
-        if (distToSegment(pt, { x: sx, y: sy }, { x: ex, y: ey }) < threshold + elem.size) {
-          return false;
-        }
+        if (distToSegment(pt, { x: sx, y: sy }, { x: ex, y: ey }) < threshold + elem.size) return false;
       }
       return true;
     });
@@ -316,7 +333,6 @@ export default function Whiteboard({
       };
       setCurrentStroke(updated);
 
-      // Fast immediate local preview
       ctx.strokeStyle = updated.color;
       ctx.lineWidth = updated.size;
       ctx.lineCap = 'round';
@@ -357,7 +373,6 @@ export default function Whiteboard({
       const updatedList = [...elements, currentStroke];
       setPageElements(updatedList);
 
-      // Broadcast complete stroke to peer
       if (broadcast) {
         broadcast('whiteboard:stroke_added', {
           page: currentPage,
@@ -369,7 +384,6 @@ export default function Whiteboard({
     setCurrentStroke(null);
   };
 
-  // Multi-Page Handlers with Peer Broadcast
   const handlePageChange = (newPage) => {
     setCurrentPage(newPage);
     if (isTeacher && broadcast) {
@@ -405,7 +419,6 @@ export default function Whiteboard({
         
         {canDraw ? (
           <>
-            {/* 1. Core Tool Selector */}
             <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
               <button
                 onClick={() => setActiveTool('pen')}
@@ -428,7 +441,7 @@ export default function Whiteboard({
                 className={`p-1.5 rounded-lg transition flex items-center gap-1 text-[11px] font-semibold ${
                   activeTool === 'magic_eraser' ? 'bg-purple-600 text-white shadow' : 'text-purple-400 hover:text-white'
                 }`}
-                title="Magic Object Eraser: Tap any stroke to erase whole object"
+                title="Magic Object Eraser"
               >
                 <Wand2 className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Magic</span>
@@ -469,7 +482,7 @@ export default function Whiteboard({
               </button>
             </div>
 
-            {/* 2. Sizing Controls */}
+            {/* Sizing Controls */}
             {activeTool === 'pixel_eraser' ? (
               <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[10px] font-semibold">
                 <span className="text-slate-500 px-1">Eraser:</span>
@@ -505,7 +518,7 @@ export default function Whiteboard({
               </div>
             )}
 
-            {/* 3. Colors */}
+            {/* Colors */}
             {activeTool !== 'pixel_eraser' && activeTool !== 'magic_eraser' && (
               <div className="flex items-center gap-1 px-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
                 {['#818cf8', '#34d399', '#f87171', '#fbbf24', '#ffffff'].map((c) => (
@@ -519,7 +532,7 @@ export default function Whiteboard({
                 <input 
                   type="color" 
                   value={color} 
-                  onChange={(e) => setColor(e.target.value)}
+                  onChange={(e) => setColor(e.target.value)} 
                   className="w-4 h-4 bg-transparent border-0 cursor-pointer rounded-full p-0"
                   title="Custom Color"
                 />
@@ -533,7 +546,7 @@ export default function Whiteboard({
           </div>
         )}
 
-        {/* 4. Multi-Page Controller */}
+        {/* Multi-Page Controller */}
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-mono">
           <button 
             disabled={currentPage <= 1}
@@ -568,7 +581,7 @@ export default function Whiteboard({
           )}
         </div>
 
-        {/* 5. Clean Page Button */}
+        {/* Clean Page */}
         {isTeacher && (
           <button
             onClick={() => setShowCleanModal(true)}
@@ -580,7 +593,7 @@ export default function Whiteboard({
           </button>
         )}
 
-        {/* 6. Host Lock Toggle */}
+        {/* Host Lock */}
         {isTeacher && (
           <button
             onClick={() => setIsStudentAllowed(!isStudentAllowed)}
@@ -594,7 +607,6 @@ export default function Whiteboard({
         )}
       </div>
 
-      {/* Canvas */}
       <canvas
         ref={canvasRef}
         onMouseDown={handlePointerDown}
@@ -608,7 +620,6 @@ export default function Whiteboard({
         }`}
       />
 
-      {/* Clean Page Confirmation Modal */}
       {showCleanModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4 text-center">
@@ -618,7 +629,7 @@ export default function Whiteboard({
             <div>
               <h3 className="font-bold text-white text-base">Clean Current Page?</h3>
               <p className="text-xs text-slate-400 mt-1">
-                Are you sure you want to erase all drawings and equations on <strong>Page {currentPage}</strong>? This action cannot be undone.
+                Erase all drawings on <strong>Page {currentPage}</strong>?
               </p>
             </div>
             <div className="flex gap-2">

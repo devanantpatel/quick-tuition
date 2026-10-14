@@ -1,65 +1,67 @@
 import React from 'react';
-import { History, Calendar, CheckCircle2, IndianRupee } from 'lucide-react';
+import { History, Eye, Download, FileText } from 'lucide-react';
 
 export default function SessionHistory({ history = [] }) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold text-sm text-slate-300 uppercase tracking-wider">
-            Completed Sessions Log
-          </h3>
-          <p className="text-xs text-slate-500">
-            Records of finished 1-on-1 sessions and revenue generated.
-          </p>
-        </div>
-        <span className="text-xs text-slate-400 font-mono">
-          {history.length} Sessions Logged
-        </span>
+  if (history.length === 0) {
+    return (
+      <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-500 text-xs">
+        No completed teaching sessions recorded yet. Completed sessions and study notes will appear here.
       </div>
+    );
+  }
 
-      {history.length === 0 ? (
-        <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-500 text-xs space-y-1">
-          <History className="w-7 h-7 text-slate-600 mx-auto mb-2" />
-          <p className="font-medium text-slate-400">No session history yet.</p>
-          <p>Completed tutoring sessions with invoice summaries will appear here automatically.</p>
-        </div>
-      ) : (
-        <div className="space-y-2.5">
-          {history.map((item) => (
-            <div 
-              key={item.id} 
-              className="p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700/80 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-white text-sm">{item.subject}</span>
-                  <span className="text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                    with {item.studentName}
-                  </span>
-                </div>
-                <p className="text-slate-400 text-[11px]">{item.topic}</p>
-                <div className="flex items-center gap-2 text-[10px] text-slate-500">
-                  <Calendar className="w-3 h-3" />
-                  <span>{item.date}</span>
-                  <span>•</span>
-                  <span>Duration: {item.duration}</span>
-                </div>
-              </div>
-
-              <div className="flex items-center sm:flex-col sm:items-end justify-between sm:justify-center border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-800">
-                <span className="text-[10px] text-slate-500 block">Earnings:</span>
-                <span className="font-bold text-emerald-400 text-sm font-mono flex items-center">
-                  {item.earned}
-                </span>
-                <span className="text-[10px] text-emerald-500/80 flex items-center gap-0.5 mt-0.5">
-                  <CheckCircle2 className="w-3 h-3" /> Completed
-                </span>
-              </div>
+  return (
+    <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
+      {history.map((item) => (
+        <div key={item.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="font-bold text-white text-sm truncate">{item.subject}</span>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                {item.earned}
+              </span>
             </div>
-          ))}
+
+            <p className="text-xs text-indigo-300 font-medium">Student: {item.studentName}</p>
+            <p className="text-[11px] text-slate-400 line-clamp-2">{item.topic}</p>
+
+            <div className="flex justify-between items-center text-[10px] text-slate-500 pt-2 border-t border-slate-800 font-mono">
+              <span>Duration: {item.duration}</span>
+              <span>{item.date}</span>
+            </div>
+          </div>
+
+          {/* Notes View & Download */}
+          <div className="pt-2 border-t border-slate-800">
+            {item.whiteboardNotes ? (
+              <button
+                onClick={() => {
+                  const imageWindow = window.open('');
+                  imageWindow.document.write(`
+                    <html>
+                      <head><title>Notes - ${item.subject}</title></head>
+                      <body style="margin:0; background:#020617; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; font-family:sans-serif;">
+                        <h3 style="color:#fff; margin-bottom:12px;">Session Notes: ${item.subject} (${item.date})</h3>
+                        <img src="${item.whiteboardNotes}" style="max-width:90%; max-height:75vh; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.5); border:1px solid #1e293b; background:#020617;" />
+                        <br/>
+                        <a href="${item.whiteboardNotes}" download="notes-${item.id}.jpg" style="background:#4f46e5; color:#fff; padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; font-size:13px;">Download Notes JPG</a>
+                      </body>
+                    </html>
+                  `);
+                }}
+                className="w-full bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white text-[11px] font-semibold py-1.5 rounded-xl border border-indigo-500/30 flex items-center justify-center gap-1.5 transition shadow"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>View & Download Notes</span>
+              </button>
+            ) : (
+              <div className="text-[10px] text-slate-500 text-center italic py-1">
+                No whiteboard notes saved
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }

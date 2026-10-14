@@ -8,6 +8,7 @@ import SideDock from './SideDock';
 import SessionReceiptModal from './SessionReceiptModal';
 import { useApp } from '../../context/AppContext';
 import { useClassroomSync } from '../../hooks/useClassroomSync';
+import { saveSessionNotes } from '../../lib/db';
 
 export default function LiveClassroom() {
   const { setActiveTab, currentUser, activeSession } = useApp();
@@ -27,11 +28,11 @@ export default function LiveClassroom() {
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
 
-  // Receipt Modal State
+  // Receipt Modal State (Only for Final Complete)
   const [showReceipt, setShowReceipt] = useState(false);
   const [finalSeconds, setFinalSeconds] = useState(0);
 
-  // Realtime Supabase Channel with Presence
+  // Realtime Supabase Channel
   const { isConnected, broadcast, registerListener, peersInRoom } = useClassroomSync(
     roomId,
     userRole,
@@ -49,6 +50,14 @@ export default function LiveClassroom() {
     registerListener('host:view_mode', (data) => {
       if (!isTeacher && data.mode) {
         setWorkspaceMode(data.mode);
+      }
+    });
+
+    // Remote Session Ended by Teacher
+    registerListener('session:force_completed', (data) => {
+      if (!isTeacher) {
+        setFinalSeconds(data.elapsedSec || 0);
+        setShowReceipt(true);
       }
     });
   }, [isTeacher, registerListener]);
@@ -69,8 +78,47 @@ export default function LiveClassroom() {
     }
   };
 
-  const handleEndSession = (elapsedSec = 0) => {
+  // 1. Temporary Exit: Directly return to Dashboard without modal
+  const handleLeaveOnly = () => {
+    setActiveTab(isTeacher ? 'teacher' : 'student');
+  };
+
+  // 2. Final Complete Session: Capture Notes, broadcast to student, and open Receipt
+  const handleEndSession = async (elapsedSec = 0) => {
     setFinalSeconds(elapsedSec);
+
+    // Capture Whiteboard Snapshot
+    let whiteboardData = null;
+    try {
+      const canvases = document.querySelectorAll('canvas');
+      for (let c of canvases) {
+        if (c.width > 300 && c.height > 300) {
+          whiteboardData = c.toDataURL('image/jpeg', 0.6);
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn('Canvas capture error:', e);
+    }
+
+    // Persist to Supabase Database
+    const bookingId = activeSession?.id;
+    if (bookingId && whiteboardData) {
+      try {
+        await saveSessionNotes(bookingId, {
+          whiteboardNotes: whiteboardData,
+          codeNotes: '// Session Notes Completed'
+        });
+      } catch (err) {
+        console.error('saveSessionNotes error:', err);
+      }
+    }
+
+    // Tell student that session is completed
+    if (broadcast) {
+      broadcast('session:force_completed', { elapsedSec });
+    }
+
     setShowReceipt(true);
   };
 
@@ -81,11 +129,12 @@ export default function LiveClassroom() {
 
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-slate-950 overflow-hidden">
-      {/* 1. Header with Live Timer, Presence & Session Meta */}
+      {/* Header */}
       <ClassroomHeader
         subjectTitle={subjectTitle}
         ratePerMin={ratePerMin}
         onEndSession={handleEndSession}
+        onLeaveOnly={handleLeaveOnly}
         peersInRoom={peersInRoom}
         currentUserRole={userRole}
       />
@@ -99,23 +148,21 @@ export default function LiveClassroom() {
             </span>
           ) : (
             <span className="text-amber-400 flex items-center gap-1.5">
-              <WifiOff className="w-3.5 h-3.5 animate-pulse" /> Connecting Supabase Channel...
+              <WifiOff className="w-3.5 h-3.5 animate-pulse" /> Connecting Channel...
             </span>
           )}
         </div>
         <div className="text-slate-400 font-sans text-xs">
-          Role: <strong className="text-white capitalize">{currentUser?.role || 'Guest'}</strong> ({currentUser?.name || 'User'})
+          Role: <strong className="text-white capitalize">{currentUser?.role || 'Guest'}</strong>
         </div>
       </div>
 
-      {/* 2. Main Persistent Simultaneous Workspace */}
+      {/* Workspace */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0">
-        
         <div className={`flex-1 flex flex-col h-full overflow-hidden relative min-h-0 ${
           workspaceMode === 'chat' ? 'hidden lg:flex' : 'flex'
         }`}>
 
-          {/* PERSISTENT WHITEBOARD */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'board' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -127,7 +174,6 @@ export default function LiveClassroom() {
             />
           </div>
 
-          {/* PERSISTENT CODE PLAYGROUND */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'code' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -139,7 +185,6 @@ export default function LiveClassroom() {
             />
           </div>
 
-          {/* PERSISTENT PRESENTATION & ANNOTATION VIEWER */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'presentation' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -149,10 +194,9 @@ export default function LiveClassroom() {
               isTeacher={isTeacher}
             />
           </div>
-
         </div>
 
-        {/* 3. SideDock with Video Call & Chat */}
+        {/* SideDock */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
           workspaceMode === 'chat' ? 'flex' : 'hidden lg:flex'
         }`}>
@@ -167,12 +211,12 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* 4. Desktop Floating Mode Controller */}
+      {/* Floating Bottom Mode Switcher */}
       <div className="hidden lg:flex absolute bottom-5 left-1/2 -translate-x-1/2 z-30 gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl">
         <button
           onClick={() => handleModeChange('board')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'board' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            workspaceMode === 'board' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
           }`}
         >
           <PenTool className="w-3.5 h-3.5" />
@@ -182,7 +226,7 @@ export default function LiveClassroom() {
         <button
           onClick={() => handleModeChange('code')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'code' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            workspaceMode === 'code' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
           }`}
         >
           <Code className="w-3.5 h-3.5" />
@@ -192,17 +236,17 @@ export default function LiveClassroom() {
         <button
           onClick={() => handleModeChange('presentation')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
           }`}
         >
           <Presentation className="w-3.5 h-3.5" />
-          <span>PPT / PDF Presentation</span>
+          <span>Slides</span>
         </button>
 
         <button
           onClick={() => handleModeChange('split')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
           }`}
         >
           <Columns className="w-3.5 h-3.5" />
@@ -210,50 +254,7 @@ export default function LiveClassroom() {
         </button>
       </div>
 
-      {/* 5. Mobile Navigation Bar */}
-      <nav className="lg:hidden bg-slate-900 border-t border-slate-800 px-3 py-2 flex items-center justify-around z-30 shrink-0">
-        <button
-          onClick={() => setWorkspaceMode('board')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
-            workspaceMode === 'board' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'
-          }`}
-        >
-          <PenTool className="w-4 h-4" />
-          <span>Board</span>
-        </button>
-
-        <button
-          onClick={() => setWorkspaceMode('code')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
-            workspaceMode === 'code' ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400'
-          }`}
-        >
-          <Code className="w-4 h-4" />
-          <span>Code</span>
-        </button>
-
-        <button
-          onClick={() => setWorkspaceMode('presentation')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
-            workspaceMode === 'presentation' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'
-          }`}
-        >
-          <Presentation className="w-4 h-4" />
-          <span>Slides</span>
-        </button>
-
-        <button
-          onClick={() => setWorkspaceMode('chat')}
-          className={`flex flex-col items-center gap-1 text-[11px] font-semibold transition px-2 py-1 rounded-xl ${
-            workspaceMode === 'chat' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'
-          }`}
-        >
-          <MessageSquare className="w-4 h-4" />
-          <span>Call</span>
-        </button>
-      </nav>
-
-      {/* 6. Post-Session Receipt Modal */}
+      {/* Final Receipt Modal */}
       <SessionReceiptModal
         isOpen={showReceipt}
         totalSeconds={finalSeconds}
@@ -261,6 +262,7 @@ export default function LiveClassroom() {
         tutorName={tutorName}
         subjectTitle={subjectTitle}
         userRole={currentUser?.role || 'student'}
+        activeSession={activeSession}
         onCloseAndRedirect={handleRedirectToDashboard}
       />
     </div>
