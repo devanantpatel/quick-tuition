@@ -28,7 +28,7 @@ export default function LiveClassroom() {
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
 
-  // Receipt Modal State (Only for Final Complete)
+  // Receipt Modal State
   const [showReceipt, setShowReceipt] = useState(false);
   const [finalSeconds, setFinalSeconds] = useState(0);
 
@@ -53,7 +53,6 @@ export default function LiveClassroom() {
       }
     });
 
-    // Remote Session Ended by Teacher
     registerListener('session:force_completed', (data) => {
       if (!isTeacher) {
         setFinalSeconds(data.elapsedSec || 0);
@@ -78,16 +77,15 @@ export default function LiveClassroom() {
     }
   };
 
-  // 1. Temporary Exit: Directly return to Dashboard without modal
+  // Leave room temporary (no receipt)
   const handleLeaveOnly = () => {
     setActiveTab(isTeacher ? 'teacher' : 'student');
   };
 
-  // 2. Final Complete Session: Capture Notes, broadcast to student, and open Receipt
+  // Final Complete Session
   const handleEndSession = async (elapsedSec = 0) => {
     setFinalSeconds(elapsedSec);
 
-    // Capture Whiteboard Snapshot
     let whiteboardData = null;
     try {
       const canvases = document.querySelectorAll('canvas');
@@ -101,7 +99,6 @@ export default function LiveClassroom() {
       console.warn('Canvas capture error:', e);
     }
 
-    // Persist to Supabase Database
     const bookingId = activeSession?.id;
     if (bookingId && whiteboardData) {
       try {
@@ -114,7 +111,6 @@ export default function LiveClassroom() {
       }
     }
 
-    // Tell student that session is completed
     if (broadcast) {
       broadcast('session:force_completed', { elapsedSec });
     }
@@ -128,8 +124,8 @@ export default function LiveClassroom() {
   };
 
   return (
-    <div className="flex flex-col h-[100dvh] w-full bg-slate-950 overflow-hidden">
-      {/* Header */}
+    <div className="flex flex-col h-[100dvh] w-full bg-slate-950 overflow-hidden relative">
+      {/* 1. Header with Live Timer, Presence & Session Meta */}
       <ClassroomHeader
         subjectTitle={subjectTitle}
         ratePerMin={ratePerMin}
@@ -140,7 +136,7 @@ export default function LiveClassroom() {
       />
 
       {/* Sync Status Banner */}
-      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px]">
+      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px] shrink-0">
         <div className="flex items-center gap-2 font-mono">
           {isConnected ? (
             <span className="text-emerald-400 flex items-center gap-1.5">
@@ -157,12 +153,14 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* Workspace */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0">
+      {/* 2. Main Persistent Simultaneous Workspace */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0 pb-16 lg:pb-0">
+        
         <div className={`flex-1 flex flex-col h-full overflow-hidden relative min-h-0 ${
           workspaceMode === 'chat' ? 'hidden lg:flex' : 'flex'
         }`}>
 
+          {/* PERSISTENT WHITEBOARD */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'board' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -174,6 +172,7 @@ export default function LiveClassroom() {
             />
           </div>
 
+          {/* PERSISTENT CODE PLAYGROUND */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'code' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -185,6 +184,7 @@ export default function LiveClassroom() {
             />
           </div>
 
+          {/* PERSISTENT PRESENTATION & ANNOTATION VIEWER */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
             workspaceMode === 'presentation' ? 'flex flex-1' : 'hidden'
           }`}>
@@ -194,11 +194,12 @@ export default function LiveClassroom() {
               isTeacher={isTeacher}
             />
           </div>
+
         </div>
 
-        {/* SideDock */}
+        {/* 3. SideDock with Video Call & Chat */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
-          workspaceMode === 'chat' ? 'flex' : 'hidden lg:flex'
+          workspaceMode === 'chat' ? 'flex flex-1' : 'hidden lg:flex'
         }`}>
           <SideDock 
             tutorName={tutorName}
@@ -211,12 +212,12 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* Floating Bottom Mode Switcher */}
-      <div className="hidden lg:flex absolute bottom-5 left-1/2 -translate-x-1/2 z-30 gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl">
+      {/* 4. RESPONSIVE FLOATING WORKSPACE CONTROLLER (Mobile + Desktop Both Fixed) */}
+      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 sm:gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl max-w-[96vw] overflow-x-auto">
         <button
           onClick={() => handleModeChange('board')}
-          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'board' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            workspaceMode === 'board' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <PenTool className="w-3.5 h-3.5" />
@@ -225,8 +226,8 @@ export default function LiveClassroom() {
 
         <button
           onClick={() => handleModeChange('code')}
-          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'code' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            workspaceMode === 'code' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <Code className="w-3.5 h-3.5" />
@@ -235,8 +236,8 @@ export default function LiveClassroom() {
 
         <button
           onClick={() => handleModeChange('presentation')}
-          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <Presentation className="w-3.5 h-3.5" />
@@ -245,16 +246,27 @@ export default function LiveClassroom() {
 
         <button
           onClick={() => handleModeChange('split')}
-          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-            workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+          className={`hidden md:flex px-3 py-1.5 rounded-xl text-xs font-semibold items-center gap-1.5 transition shrink-0 ${
+            workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
           <Columns className="w-3.5 h-3.5" />
-          <span>Split Screen</span>
+          <span>Split</span>
+        </button>
+
+        {/* Mobile View Video/Chat Switcher Tab */}
+        <button
+          onClick={() => handleModeChange('chat')}
+          className={`lg:hidden px-3 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 transition shrink-0 ${
+            workspaceMode === 'chat' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          <span>Call & Chat</span>
         </button>
       </div>
 
-      {/* Final Receipt Modal */}
+      {/* 5. Post-Session Receipt Modal */}
       <SessionReceiptModal
         isOpen={showReceipt}
         totalSeconds={finalSeconds}
