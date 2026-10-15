@@ -1,57 +1,69 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { 
-  Pencil, Eraser, Wand2, Trash2, Lock, Unlock, Square, Circle, 
-  Minus, ArrowRight, ChevronLeft, ChevronRight, Plus, AlertTriangle 
+  Pencil, Eraser, Sparkles, Trash2, 
+  ChevronLeft, ChevronRight, Plus, Minus, Lock,
+  Square, Circle, Minus as LineIcon
 } from 'lucide-react';
+import { jsPDF } from 'jspdf';
 import { useApp } from '../../context/AppContext';
+
+const PRESET_COLORS = [
+  { name: 'Indigo', value: '#818cf8' },
+  { name: 'Emerald', value: '#34d399' },
+  { name: 'Rose', value: '#f87171' },
+  { name: 'Amber', value: '#fbbf24' },
+  { name: 'White', value: '#ffffff' }
+];
 
 export default function Whiteboard({ 
   isStudentAllowed, 
   setIsStudentAllowed, 
+  isTeacher: propIsTeacher,
+  lockStudentView = true,
   broadcast, 
   registerListener 
 }) {
   const { currentUser, activeSession } = useApp();
-  const isTeacher = currentUser?.role === 'teacher';
+  const isTeacher = propIsTeacher ?? (currentUser?.role === 'teacher');
   const roomId = activeSession?.id ? `board_cache_${activeSession.id}` : 'board_cache_default';
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
 
-  // 1. Initial State from Local Storage (Zero Data Loss on Rejoin)
   const [pages, setPages] = useState(() => {
     try {
       const saved = localStorage.getItem(roomId);
       if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.warn('Failed to load board cache:', e);
-    }
+    } catch (e) {}
     return { 1: [] };
   });
 
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(() => Object.keys(pages).length || 1);
 
-  // Tools: 'pen' | 'pixel_eraser' | 'magic_eraser' | 'rect' | 'circle' | 'line' | 'arrow'
+  // Tools: 'pen' | 'eraser' | 'magic' | 'rect' | 'circle' | 'line'
   const [activeTool, setActiveTool] = useState('pen');
   const [color, setColor] = useState('#818cf8');
-  const [penSize, setPenSize] = useState(3);
-  const [eraserSize, setEraserSize] = useState(16);
+  const [thicknessPreset, setThicknessPreset] = useState('thin'); 
 
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentStroke, setCurrentStroke] = useState(null);
-  const [showCleanModal, setShowCleanModal] = useState(false);
+  const [shapeStart, setShapeStart] = useState(null);
 
   const canDraw = isTeacher || Boolean(isStudentAllowed);
   const elements = pages[currentPage] || [];
 
-  // Auto-Save to Local Cache on Every Stroke Update
+  const getStrokeSize = () => {
+    if (activeTool === 'eraser') {
+      return thicknessPreset === 'thin' ? 14 : thicknessPreset === 'mid' ? 24 : 36;
+    }
+    return thicknessPreset === 'thin' ? 2.5 : thicknessPreset === 'mid' ? 5 : 9;
+  };
+
   useEffect(() => {
     try {
       localStorage.setItem(roomId, JSON.stringify(pages));
-    } catch (e) {
-      console.warn('Storage quota error:', e);
-    }
+    } catch (e) {}
   }, [pages, roomId]);
 
   const setPageElements = useCallback((newElements, pageNum = currentPage) => {
@@ -76,8 +88,7 @@ export default function Whiteboard({
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      if (elem.type === 'pen') {
-        if (!elem.points || elem.points.length < 2) return;
+      if (elem.type === 'pen' && elem.points?.length > 1) {
         ctx.beginPath();
         ctx.moveTo(elem.points[0].nx * w, elem.points[0].ny * h);
         for (let i = 1; i < elem.points.length; i++) {
@@ -89,31 +100,12 @@ export default function Whiteboard({
       } else if (elem.type === 'circle') {
         const r = elem.radiusN * Math.min(w, h);
         ctx.beginPath();
-        ctx.arc(elem.startNx * w, elem.startNy * h, r, 0, 2 * Math.PI);
+        ctx.arc(elem.startNx * w, elem.startNy * h, Math.max(0, r), 0, 2 * Math.PI);
         ctx.stroke();
       } else if (elem.type === 'line') {
         ctx.beginPath();
         ctx.moveTo(elem.startNx * w, elem.startNy * h);
         ctx.lineTo(elem.endNx * w, elem.endNy * h);
-        ctx.stroke();
-      } else if (elem.type === 'arrow') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
-        const ex = elem.endNx * w;
-        const ey = elem.endNy * h;
-
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
-
-        const angle = Math.atan2(ey - sy, ex - sx);
-        const head = 12 + elem.size;
-        ctx.beginPath();
-        ctx.moveTo(ex, ey);
-        ctx.lineTo(ex - head * Math.cos(angle - Math.PI / 6), ey - head * Math.sin(angle - Math.PI / 6));
-        ctx.moveTo(ex, ey);
-        ctx.lineTo(ex - head * Math.cos(angle + Math.PI / 6), ey - head * Math.sin(angle + Math.PI / 6));
         ctx.stroke();
       }
     });
@@ -138,29 +130,23 @@ export default function Whiteboard({
     redrawCanvas();
   }, [redrawCanvas]);
 
-  // Real-Time Supabase Synchronization
+  // Realtime Supabase Sync
   useEffect(() => {
     if (!registerListener) return;
 
     registerListener('whiteboard:stroke_added', (payload) => {
-      if (payload && payload.element && payload.page) {
+      if (payload?.element && payload?.page) {
         setPages(prev => {
-          const targetPageList = prev[payload.page] || [];
-          if (targetPageList.some(el => el.id === payload.element.id)) return prev;
-          return {
-            ...prev,
-            [payload.page]: [...targetPageList, payload.element]
-          };
+          const list = prev[payload.page] || [];
+          if (list.some(el => el.id === payload.element.id)) return prev;
+          return { ...prev, [payload.page]: [...list, payload.element] };
         });
       }
     });
 
     registerListener('whiteboard:page_update', (payload) => {
-      if (payload && payload.page !== undefined) {
-        setPages(prev => ({
-          ...prev,
-          [payload.page]: payload.elements || []
-        }));
+      if (payload?.page !== undefined) {
+        setPages(prev => ({ ...prev, [payload.page]: payload.elements || [] }));
       }
     });
 
@@ -168,36 +154,11 @@ export default function Whiteboard({
       if (!isTeacher && payload) {
         if (payload.currentPage) setCurrentPage(payload.currentPage);
         if (payload.totalPages) setTotalPages(payload.totalPages);
+        if (payload.allPages) setPages(payload.allPages);
       }
     });
+  }, [registerListener, isTeacher]);
 
-    // Rejoin Peer Request & Response
-    registerListener('whiteboard:request_full_state', () => {
-      if (broadcast && Object.keys(pages).length > 0) {
-        broadcast('whiteboard:sync_full_state', { pages, currentPage, totalPages });
-      }
-    });
-
-    registerListener('whiteboard:sync_full_state', (payload) => {
-      if (payload && payload.pages) {
-        setPages(payload.pages);
-        if (payload.currentPage) setCurrentPage(payload.currentPage);
-        if (payload.totalPages) setTotalPages(payload.totalPages);
-      }
-    });
-  }, [registerListener, isTeacher, broadcast, pages, currentPage, totalPages]);
-
-  // Request Peer Sync upon entering
-  useEffect(() => {
-    if (broadcast) {
-      const timer = setTimeout(() => {
-        broadcast('whiteboard:request_full_state', {});
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [broadcast]);
-
-  // Coordinate normalizer (0.0 to 1.0)
   const getNormalizedCoords = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0, nx: 0, ny: 0 };
@@ -207,75 +168,40 @@ export default function Whiteboard({
 
     const x = clientX - rect.left;
     const y = clientY - rect.top;
-    const nx = Math.max(0, Math.min(1, x / canvas.width));
-    const ny = Math.max(0, Math.min(1, y / canvas.height));
-
-    return { x, y, nx, ny };
-  };
-
-  const distToSegment = (p, v, w) => {
-    const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
-    if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
-    let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
-  };
-
-  const handleMagicErase = (pt) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const w = canvas.width;
-    const h = canvas.height;
-    const threshold = 16;
-
-    const remaining = elements.filter(elem => {
-      if (elem.type === 'pen') {
-        for (let i = 0; i < elem.points.length - 1; i++) {
-          const ptA = { x: elem.points[i].nx * w, y: elem.points[i].ny * h };
-          const ptB = { x: elem.points[i + 1].nx * w, y: elem.points[i + 1].ny * h };
-          if (distToSegment(pt, ptA, ptB) < threshold + elem.size) return false;
-        }
-      } else if (elem.type === 'rect') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
-        const rw = elem.widthN * w;
-        const rh = elem.heightN * h;
-        if (pt.x >= Math.min(sx, sx + rw) - threshold && pt.x <= Math.max(sx, sx + rw) + threshold &&
-            pt.y >= Math.min(sy, sy + rh) - threshold && pt.y <= Math.max(sy, sy + rh) + threshold) return false;
-      } else if (elem.type === 'circle') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
-        const r = elem.radiusN * Math.min(w, h);
-        if (Math.abs(Math.hypot(pt.x - sx, pt.y - sy) - r) < threshold + elem.size) return false;
-      } else if (elem.type === 'line' || elem.type === 'arrow') {
-        const sx = elem.startNx * w;
-        const sy = elem.startNy * h;
-        const ex = elem.endNx * w;
-        const ey = elem.endNy * h;
-        if (distToSegment(pt, { x: sx, y: sy }, { x: ex, y: ey }) < threshold + elem.size) return false;
-      }
-      return true;
-    });
-
-    if (remaining.length !== elements.length) {
-      setPageElements(remaining);
-      if (broadcast) {
-        broadcast('whiteboard:page_update', { page: currentPage, elements: remaining });
-      }
-    }
+    return {
+      x,
+      y,
+      nx: Math.max(0, Math.min(1, x / canvas.width)),
+      ny: Math.max(0, Math.min(1, y / canvas.height))
+    };
   };
 
   const handlePointerDown = (e) => {
     if (!canDraw) return;
     const pt = getNormalizedCoords(e);
-    setIsDrawing(true);
 
-    if (activeTool === 'magic_eraser') {
-      handleMagicErase({ x: pt.x, y: pt.y });
+    // Magic Eraser
+    if (activeTool === 'magic') {
+      const hitIndex = elements.findLastIndex(elem => {
+        if (elem.points) {
+          return elem.points.some(p => Math.hypot(p.nx - pt.nx, p.ny - pt.ny) < 0.035);
+        }
+        return Math.hypot((elem.startNx || 0) - pt.nx, (elem.startNy || 0) - pt.ny) < 0.04;
+      });
+
+      if (hitIndex !== -1) {
+        const updated = elements.filter((_, idx) => idx !== hitIndex);
+        setPageElements(updated);
+        if (broadcast) {
+          broadcast('whiteboard:page_update', { page: currentPage, elements: updated });
+        }
+      }
       return;
     }
 
+    setIsDrawing(true);
     const strokeId = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const strokeSize = getStrokeSize();
 
     if (activeTool === 'pen') {
       setCurrentStroke({
@@ -283,30 +209,18 @@ export default function Whiteboard({
         type: 'pen',
         points: [{ nx: pt.nx, ny: pt.ny }],
         color,
-        size: penSize
+        size: strokeSize
       });
-    } else if (activeTool === 'pixel_eraser') {
+    } else if (activeTool === 'eraser') {
       setCurrentStroke({
         id: strokeId,
         type: 'pen',
         points: [{ nx: pt.nx, ny: pt.ny }],
         color: '#020617',
-        size: eraserSize
+        size: strokeSize
       });
-    } else {
-      setCurrentStroke({
-        id: strokeId,
-        type: activeTool,
-        startNx: pt.nx,
-        startNy: pt.ny,
-        endNx: pt.nx,
-        endNy: pt.ny,
-        widthN: 0,
-        heightN: 0,
-        radiusN: 0,
-        color,
-        size: penSize
-      });
+    } else if (['rect', 'circle', 'line'].includes(activeTool)) {
+      setShapeStart({ startNx: pt.nx, startNy: pt.ny });
     }
   };
 
@@ -314,19 +228,11 @@ export default function Whiteboard({
     if (!isDrawing || !canDraw) return;
     const pt = getNormalizedCoords(e);
 
-    if (activeTool === 'magic_eraser') {
-      handleMagicErase({ x: pt.x, y: pt.y });
-      return;
-    }
+    if (currentStroke) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
 
-    if (!currentStroke) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-
-    if (currentStroke.type === 'pen') {
       const updated = {
         ...currentStroke,
         points: [...currentStroke.points, { nx: pt.nx, ny: pt.ny }]
@@ -338,317 +244,337 @@ export default function Whiteboard({
       ctx.lineCap = 'round';
       ctx.lineTo(pt.x, pt.y);
       ctx.stroke();
-    } else {
-      const updated = { 
-        ...currentStroke, 
-        endNx: pt.nx, 
-        endNy: pt.ny,
-        widthN: pt.nx - currentStroke.startNx,
-        heightN: pt.ny - currentStroke.startNy,
-        radiusN: Math.hypot(pt.nx - currentStroke.startNx, pt.ny - currentStroke.startNy)
-      };
-      setCurrentStroke(updated);
-
-      redrawCanvas();
-      ctx.strokeStyle = updated.color;
-      ctx.lineWidth = updated.size;
-
-      if (activeTool === 'rect') {
-        ctx.strokeRect(updated.startNx * w, updated.startNy * h, updated.widthN * w, updated.heightN * h);
-      } else if (activeTool === 'circle') {
-        ctx.beginPath();
-        ctx.arc(updated.startNx * w, updated.startNy * h, updated.radiusN * Math.min(w, h), 0, 2 * Math.PI);
-        ctx.stroke();
-      } else if (activeTool === 'line' || activeTool === 'arrow') {
-        ctx.beginPath();
-        ctx.moveTo(updated.startNx * w, updated.startNy * h);
-        ctx.lineTo(updated.endNx * w, updated.endNy * h);
-        ctx.stroke();
-      }
     }
   };
 
-  const handlePointerUp = () => {
-    if (isDrawing && currentStroke) {
-      const updatedList = [...elements, currentStroke];
-      setPageElements(updatedList);
+  const handlePointerUp = (e) => {
+    if (!isDrawing || !canDraw) return;
+    const pt = getNormalizedCoords(e);
+    const strokeId = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const strokeSize = getStrokeSize();
 
-      if (broadcast) {
-        broadcast('whiteboard:stroke_added', {
-          page: currentPage,
-          element: currentStroke
-        });
+    let newElem = null;
+
+    if (currentStroke) {
+      newElem = currentStroke;
+    } else if (shapeStart) {
+      if (activeTool === 'rect') {
+        newElem = {
+          id: strokeId,
+          type: 'rect',
+          startNx: Math.min(shapeStart.startNx, pt.nx),
+          startNy: Math.min(shapeStart.startNy, pt.ny),
+          widthN: Math.abs(pt.nx - shapeStart.startNx),
+          heightN: Math.abs(pt.ny - shapeStart.startNy),
+          color,
+          size: strokeSize
+        };
+      } else if (activeTool === 'circle') {
+        const radius = Math.hypot(pt.nx - shapeStart.startNx, pt.ny - shapeStart.startNy);
+        newElem = {
+          id: strokeId,
+          type: 'circle',
+          startNx: shapeStart.startNx,
+          startNy: shapeStart.startNy,
+          radiusN: radius,
+          color,
+          size: strokeSize
+        };
+      } else if (activeTool === 'line') {
+        newElem = {
+          id: strokeId,
+          type: 'line',
+          startNx: shapeStart.startNx,
+          startNy: shapeStart.startNy,
+          endNx: pt.nx,
+          endNy: pt.ny,
+          color,
+          size: strokeSize
+        };
       }
     }
+
+    if (newElem) {
+      const updated = [...elements, newElem];
+      setPageElements(updated);
+      if (broadcast) {
+        broadcast('whiteboard:stroke_added', { page: currentPage, element: newElem });
+      }
+    }
+
     setIsDrawing(false);
     setCurrentStroke(null);
+    setShapeStart(null);
   };
 
   const handlePageChange = (newPage) => {
+    if (!isTeacher && lockStudentView) return;
     setCurrentPage(newPage);
     if (isTeacher && broadcast) {
-      broadcast('whiteboard:page_nav', { currentPage: newPage, totalPages });
+      broadcast('whiteboard:page_nav', { currentPage: newPage, totalPages, allPages: pages });
     }
   };
 
   const handleAddNewPage = () => {
+    if (!isTeacher) return;
     const nextPg = totalPages + 1;
+    const nextPages = { ...pages, [nextPg]: [] };
     setTotalPages(nextPg);
-    setPages(prev => ({ ...prev, [nextPg]: [] }));
+    setPages(nextPages);
     setCurrentPage(nextPg);
+    if (broadcast) {
+      broadcast('whiteboard:page_nav', { currentPage: nextPg, totalPages: nextPg, allPages: nextPages });
+    }
+  };
 
-    if (isTeacher && broadcast) {
-      broadcast('whiteboard:page_nav', { currentPage: nextPg, totalPages: nextPg });
+  const handleRemoveCurrentPage = () => {
+    if (!isTeacher || totalPages <= 1) return;
+
+    const remainingPages = {};
+    const oldKeys = Object.keys(pages).map(Number).sort((a, b) => a - b);
+    let newIndex = 1;
+
+    oldKeys.forEach(k => {
+      if (k !== currentPage) {
+        remainingPages[newIndex] = pages[k];
+        newIndex++;
+      }
+    });
+
+    const newTotal = totalPages - 1;
+    const newCurrent = Math.min(currentPage, newTotal);
+
+    setPages(remainingPages);
+    setTotalPages(newTotal);
+    setCurrentPage(newCurrent);
+
+    if (broadcast) {
+      broadcast('whiteboard:page_nav', { 
+        currentPage: newCurrent, 
+        totalPages: newTotal, 
+        allPages: remainingPages 
+      });
     }
   };
 
   const handleCleanPage = () => {
+    if (!isTeacher) return;
     setPageElements([]);
-    setShowCleanModal(false);
-
     if (broadcast) {
       broadcast('whiteboard:page_update', { page: currentPage, elements: [] });
     }
   };
 
   return (
-    <div ref={containerRef} className="flex-1 w-full h-full bg-[#020617] relative overflow-hidden select-none touch-none min-h-0">
+    <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none">
       
-      {/* Top Floating Toolbar */}
-      <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 bg-slate-900/95 backdrop-blur border border-slate-800 p-2 rounded-2xl shadow-2xl max-w-[95%]">
+      {/* TOOLBAR */}
+      <div className="w-full bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20 shadow-md">
         
-        {canDraw ? (
-          <>
-            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-              <button
-                onClick={() => setActiveTool('pen')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'pen' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Pen"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
+        {/* GROUP 1: PAGE CHANGER (LOCKED FOR STUDENTS) */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-xl border border-slate-800 font-mono text-xs shadow-inner">
+            <button 
+              disabled={currentPage <= 1 || (!isTeacher && lockStudentView)}
+              onClick={() => handlePageChange(currentPage - 1)}
+              className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed"
+              title="Previous Page"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            
+            <span className="text-slate-200 font-sans font-bold px-1.5 text-xs flex items-center gap-1">
+              {!isTeacher && lockStudentView && <Lock className="w-2.5 h-2.5 text-indigo-400" />}
+              {currentPage}/{totalPages}
+            </span>
 
-              <button
-                onClick={() => setActiveTool('pixel_eraser')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'pixel_eraser' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Pixel Eraser"
-              >
-                <Eraser className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                onClick={() => setActiveTool('magic_eraser')}
-                className={`p-1.5 rounded-lg transition flex items-center gap-1 text-[11px] font-semibold ${
-                  activeTool === 'magic_eraser' ? 'bg-purple-600 text-white shadow' : 'text-purple-400 hover:text-white'
-                }`}
-                title="Magic Object Eraser"
-              >
-                <Wand2 className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Magic</span>
-              </button>
-
-              <div className="w-[1px] h-4 bg-slate-800 mx-0.5" />
-
-              <button
-                onClick={() => setActiveTool('rect')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'rect' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Rectangle"
-              >
-                <Square className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                onClick={() => setActiveTool('circle')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'circle' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Circle"
-              >
-                <Circle className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                onClick={() => setActiveTool('line')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'line' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Line"
-              >
-                <Minus className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                onClick={() => setActiveTool('arrow')}
-                className={`p-1.5 rounded-lg transition ${activeTool === 'arrow' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                title="Arrow"
-              >
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Sizing Controls */}
-            {activeTool === 'pixel_eraser' ? (
-              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[10px] font-semibold">
-                <span className="text-slate-500 px-1">Eraser:</span>
-                <button
-                  onClick={() => setEraserSize(14)}
-                  className={`px-2 py-0.5 rounded-md transition ${eraserSize === 14 ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            <button 
+              disabled={currentPage >= totalPages || (!isTeacher && lockStudentView)}
+              onClick={() => handlePageChange(currentPage + 1)}
+              className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed"
+              title="Next Page"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+            
+            {isTeacher && (
+              <div className="flex items-center gap-1 ml-1 pl-1 border-l border-slate-800">
+                <button 
+                  onClick={handleAddNewPage}
+                  className="p-0.5 text-indigo-400 hover:text-indigo-300"
+                  title="Add New Page"
                 >
-                  Thin
+                  <Plus className="w-3.5 h-3.5" />
                 </button>
-                <button
-                  onClick={() => setEraserSize(36)}
-                  className={`px-2 py-0.5 rounded-md transition ${eraserSize === 36 ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                <button 
+                  disabled={totalPages <= 1}
+                  onClick={handleRemoveCurrentPage}
+                  className="p-0.5 text-rose-400 hover:text-rose-300 disabled:opacity-30"
+                  title="Delete Selected Page"
                 >
-                  Thick
+                  <Minus className="w-3.5 h-3.5" />
                 </button>
               </div>
-            ) : activeTool !== 'magic_eraser' && (
-              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[10px] font-semibold">
-                <span className="text-slate-500 px-1">Pen:</span>
-                {[
-                  { label: 'Thin', val: 2 },
-                  { label: 'Mid', val: 5 },
-                  { label: 'Thick', val: 10 }
-                ].map((s) => (
-                  <button
-                    key={s.val}
-                    onClick={() => setPenSize(s.val)}
-                    className={`px-1.5 py-0.5 rounded-md transition ${penSize === s.val ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
             )}
-
-            {/* Colors */}
-            {activeTool !== 'pixel_eraser' && activeTool !== 'magic_eraser' && (
-              <div className="flex items-center gap-1 px-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                {['#818cf8', '#34d399', '#f87171', '#fbbf24', '#ffffff'].map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setColor(c)}
-                    className={`w-3.5 h-3.5 rounded-full border transition ${color === c ? 'scale-125 border-white ring-1 ring-white/50' : 'border-transparent'}`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-                <input 
-                  type="color" 
-                  value={color} 
-                  onChange={(e) => setColor(e.target.value)} 
-                  className="w-4 h-4 bg-transparent border-0 cursor-pointer rounded-full p-0"
-                  title="Custom Color"
-                />
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="flex items-center gap-1.5 px-3 py-1 text-slate-400 text-xs font-semibold">
-            <Lock className="w-3.5 h-3.5 text-amber-400" />
-            <span>View Only Mode (Teacher Locked)</span>
           </div>
-        )}
-
-        {/* Multi-Page Controller */}
-        <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-mono">
-          <button 
-            disabled={currentPage <= 1}
-            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Previous Page"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-          
-          <span className="text-[11px] text-slate-300 px-1 font-sans">
-            Page {currentPage}/{totalPages}
-          </span>
-
-          <button 
-            disabled={currentPage >= totalPages}
-            onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Next Page"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
 
           {isTeacher && (
-            <button 
-              onClick={handleAddNewPage}
-              className="p-1 text-indigo-400 hover:text-indigo-300 ml-1 border-l border-slate-800 pl-1.5"
-              title="Add New Whiteboard Page"
+            <button
+              onClick={handleCleanPage}
+              className="px-2.5 py-1 bg-rose-950/40 border border-rose-500/40 text-rose-400 hover:text-white hover:bg-rose-600 rounded-xl transition text-xs font-bold flex items-center gap-1 shadow-sm"
+              title="Wipe current page clean"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Trash2 className="w-3 h-3" />
+              <span>Clean</span>
             </button>
           )}
         </div>
 
-        {/* Clean Page */}
-        {isTeacher && (
-          <button
-            onClick={() => setShowCleanModal(true)}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-rose-400 hover:text-white bg-rose-950/40 hover:bg-rose-600 border border-rose-500/30 rounded-xl transition text-[11px] font-semibold"
-            title="Wipe current page"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Clean Page</span>
-          </button>
-        )}
+        {/* GROUP 2: TOOLS (PEN, ERASER, MAGIC, RECT, CIRCLE, LINE) + THICKNESS + COLORS */}
+        <div className={`flex items-center gap-1.5 overflow-x-auto ${
+          !canDraw ? 'opacity-40 pointer-events-none' : ''
+        }`}>
+          
+          {/* Main Drawing & Shapes Tools In The Same Row */}
+          <div className="flex items-center gap-1 bg-slate-950 p-0.5 rounded-xl border border-slate-800 shadow-inner shrink-0">
+            {/* Pen */}
+            <button
+              onClick={() => setActiveTool('pen')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'pen' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+              title="Pen"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
 
-        {/* Host Lock */}
-        {isTeacher && (
-          <button
-            onClick={() => setIsStudentAllowed(!isStudentAllowed)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ml-auto ${
-              isStudentAllowed ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-400' : 'bg-slate-800 text-slate-400 hover:text-white'
-            }`}
-          >
-            {isStudentAllowed ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
-            <span>{isStudentAllowed ? 'Student Can Draw' : 'Student Locked'}</span>
-          </button>
+            {/* Eraser */}
+            <button
+              onClick={() => setActiveTool('eraser')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'eraser' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+              title="Eraser"
+            >
+              <Eraser className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Magic Eraser */}
+            <button
+              onClick={() => setActiveTool('magic')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'magic' ? 'bg-amber-600 text-white shadow-sm' : 'text-amber-400 hover:text-amber-300'}`}
+              title="Magic Eraser (Tap any stroke/shape to erase)"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </button>
+
+            <div className="w-[1px] h-3.5 bg-slate-800 mx-0.5" />
+
+            {/* Rectangle */}
+            <button
+              onClick={() => setActiveTool('rect')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'rect' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+              title="Draw Rectangle"
+            >
+              <Square className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Circle */}
+            <button
+              onClick={() => setActiveTool('circle')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'circle' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+              title="Draw Circle"
+            >
+              <Circle className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Line */}
+            <button
+              onClick={() => setActiveTool('line')}
+              className={`p-1.5 rounded-lg transition ${activeTool === 'line' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+              title="Draw Line"
+            >
+              <LineIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Thickness Pill (Thin, Mid, Bold) */}
+          <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-xl border border-slate-800 shadow-inner shrink-0">
+            <button
+              onClick={() => setThicknessPreset('thin')}
+              className={`px-1.5 py-0.5 rounded-md flex items-center justify-center transition ${
+                thicknessPreset === 'thin' ? 'bg-indigo-600/40 border border-indigo-500/50' : 'hover:bg-slate-900'
+              }`}
+              title="Thin (2px)"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+            </button>
+
+            <button
+              onClick={() => setThicknessPreset('mid')}
+              className={`px-1.5 py-0.5 rounded-md flex items-center justify-center transition ${
+                thicknessPreset === 'mid' ? 'bg-indigo-600/40 border border-indigo-500/50' : 'hover:bg-slate-900'
+              }`}
+              title="Medium (5px)"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-slate-300" />
+            </button>
+
+            <button
+              onClick={() => setThicknessPreset('bold')}
+              className={`px-1.5 py-0.5 rounded-md flex items-center justify-center transition ${
+                thicknessPreset === 'bold' ? 'bg-indigo-600/40 border border-indigo-500/50' : 'hover:bg-slate-900'
+              }`}
+              title="Bold (10px)"
+            >
+              <span className="w-3.5 h-3.5 rounded-full bg-slate-300" />
+            </button>
+          </div>
+
+          {/* Color Palette */}
+          <div className="flex items-center gap-1.5 bg-slate-950 px-2 py-1.5 rounded-xl border border-slate-800 shadow-inner shrink-0">
+            {PRESET_COLORS.map(c => (
+              <button
+                key={c.value}
+                onClick={() => { setColor(c.value); if (activeTool === 'eraser' || activeTool === 'magic') setActiveTool('pen'); }}
+                className={`w-4 h-4 rounded-full border transition ${
+                  color === c.value && activeTool !== 'eraser' && activeTool !== 'magic'
+                    ? 'scale-125 border-white ring-2 ring-indigo-500/50' 
+                    : 'border-transparent opacity-80 hover:opacity-100'
+                }`}
+                style={{ backgroundColor: c.value }}
+                title={c.name}
+              />
+            ))}
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* CANVAS DRAWING STAGE */}
+      <div ref={containerRef} className="flex-1 w-full h-full relative overflow-hidden bg-[#020617] touch-none">
+        <canvas
+          ref={canvasRef}
+          onMouseDown={handlePointerDown}
+          onMouseMove={handlePointerMove}
+          onMouseUp={handlePointerUp}
+          onTouchStart={handlePointerDown}
+          onTouchMove={handlePointerMove}
+          onTouchEnd={handlePointerUp}
+          className={`w-full h-full block bg-[#020617] ${
+            !canDraw 
+              ? 'cursor-not-allowed' 
+              : activeTool === 'magic' 
+              ? 'cursor-pointer' 
+              : 'cursor-crosshair'
+          }`}
+        />
+
+        {!canDraw && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-slate-800 px-3 py-1 rounded-full text-xs text-slate-400 flex items-center gap-1.5 shadow-xl pointer-events-none">
+            <Lock className="w-3 h-3 text-rose-400" />
+            <span>Whiteboard drawing is locked by educator</span>
+          </div>
         )}
       </div>
 
-      <canvas
-        ref={canvasRef}
-        onMouseDown={handlePointerDown}
-        onMouseMove={handlePointerMove}
-        onMouseUp={handlePointerUp}
-        onTouchStart={handlePointerDown}
-        onTouchMove={handlePointerMove}
-        onTouchEnd={handlePointerUp}
-        className={`w-full h-full block bg-[#020617] ${
-          canDraw ? (activeTool === 'magic_eraser' ? 'cursor-pointer' : 'cursor-crosshair') : 'cursor-default'
-        }`}
-      />
-
-      {showCleanModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4 text-center">
-            <div className="w-12 h-12 bg-rose-950/60 border border-rose-500/40 text-rose-400 rounded-2xl flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="font-bold text-white text-base">Clean Current Page?</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Erase all drawings on <strong>Page {currentPage}</strong>?
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowCleanModal(false)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2.5 rounded-xl transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCleanPage}
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2.5 rounded-xl transition shadow-lg shadow-rose-600/30"
-              >
-                Yes, Clean Page
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
