@@ -1,236 +1,274 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { FileText, Upload } from 'lucide-react';
-import MediaBar from './presentation/MediaBar';
-import AnnotationLayer from './presentation/AnnotationLayer';
-import PdfViewer from './presentation/PdfViewer';
-import { supabase } from '../../lib/supabase';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { FileText, Upload, Trash2, Eye, MousePointer } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
-export default function PresentationViewer({ 
-  broadcast, 
-  registerListener, 
-  isTeacher: propIsTeacher 
-}) {
-  const { currentUser } = useApp();
-  const isTeacher = propIsTeacher ?? (currentUser?.role === 'teacher');
+export default function PresentationViewer({ broadcast, registerListener, isTeacher, currentUser }) {
+  const { activeSession } = useApp();
+  const roomId = activeSession?.id ? `pdf_cache_${activeSession.id}` : 'pdf_cache_default';
 
-  const [documents, setDocuments] = useState(() => {
+  const [pdfDataUrl, setPdfDataUrl] = useState(() => {
     try {
-      const saved = localStorage.getItem('classroom_docs_tray');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return [];
+      return localStorage.getItem(`${roomId}_data`) || '';
+    } catch (e) {
+      return '';
+    }
   });
 
-  const [activeDocIndex, setActiveDocIndex] = useState(0);
-  const [isLiveToStudent, setIsLiveToStudent] = useState(true);
-  const [uploadState, setUploadState] = useState({ isUploading: false, progress: 0, speed: '0 KB/s' });
-  const [drawingEnabled, setDrawingEnabled] = useState(false);
-  const [tool, setTool] = useState('pen');
+  const [pdfName, setPdfName] = useState(() => {
+    try {
+      return localStorage.getItem(`${roomId}_name`) || '';
+    } catch (e) {
+      return '';
+    }
+  });
 
+  // Pointer Activation Mode (Ensures iframe clicks vs pointer coordination)
+  const [isLaserActive, setIsLaserActive] = useState(true);
+  const [peerPointer, setPeerPointer] = useState(null);
+  const pointerTimeoutRef = useRef(null);
+  const lastSendTimeRef = useRef(0);
+
+  const fileInputRef = useRef(null);
+  const containerRef = useRef(null);
+
+  // LocalStorage Room Cache
   useEffect(() => {
     try {
-      localStorage.setItem('classroom_docs_tray', JSON.stringify(documents));
+      if (pdfDataUrl) {
+        localStorage.setItem(`${roomId}_data`, pdfDataUrl);
+        localStorage.setItem(`${roomId}_name`, pdfName);
+      } else {
+        localStorage.removeItem(`${roomId}_data`);
+        localStorage.removeItem(`${roomId}_name`);
+      }
     } catch (e) {}
-  }, [documents]);
+  }, [pdfDataUrl, pdfName, roomId]);
 
-  const broadcastCurrentState = useCallback((docs = documents, activeIdx = activeDocIndex) => {
-    if (broadcast && isTeacher && docs.length > 0) {
-      broadcast('presentation:sync_state', {
-        documents: docs,
-        activeDocIndex: activeIdx,
-        activeDoc: docs[activeIdx] || null,
-        isLive: true
-      });
-    }
-  }, [broadcast, isTeacher, documents, activeDocIndex]);
-
+  // Realtime Listeners
   useEffect(() => {
     if (!registerListener) return;
 
-    registerListener('presentation:sync_state', (data) => {
-      if (!isTeacher && data) {
-        if (data.documents && data.documents.length > 0) {
-          setDocuments(data.documents);
-          setActiveDocIndex(data.activeDocIndex || 0);
-          setIsLiveToStudent(true);
-        }
+    registerListener('pdf:load_document', (data) => {
+      if (!isTeacher && data?.dataUrl) {
+        setPdfDataUrl(data.dataUrl);
+        setPdfName(data.name || 'Shared Document.pdf');
       }
     });
 
-    registerListener('presentation:request_sync', () => {
-      if (isTeacher) {
-        broadcastCurrentState();
+    registerListener('pdf:close_document', () => {
+      if (!isTeacher) {
+        setPdfDataUrl('');
+        setPdfName('');
+        setPeerPointer(null);
       }
     });
-  }, [registerListener, isTeacher, broadcastCurrentState]);
 
-  useEffect(() => {
-    if (!isTeacher) return;
-    const interval = setInterval(() => {
-      broadcastCurrentState();
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [isTeacher, broadcastCurrentState]);
+    // Realtime Laser Pointer (Throttled smooth reception)
+    registerListener('pdf:laser_pointer', (data) => {
+      if (data && data.senderRole !== currentUser?.role) {
+        setPeerPointer(data);
+        if (pointerTimeoutRef.current) clearTimeout(pointerTimeoutRef.current);
+        pointerTimeoutRef.current = setTimeout(() => {
+          setPeerPointer(null);
+        }, 3000);
+      }
+    });
 
-  useEffect(() => {
-    if (!isTeacher && broadcast) {
-      broadcast('presentation:request_sync', {});
-    }
-  }, [isTeacher, broadcast]);
+    // Student Rejoin Handshake
+    registerListener('room:request_state', () => {
+      if (isTeacher && pdfDataUrl && broadcast) {
+        broadcast('pdf:load_document', {
+          dataUrl: pdfDataUrl,
+          name: pdfName
+        });
+      }
+    });
+  }, [registerListener, isTeacher, currentUser, pdfDataUrl, pdfName, broadcast]);
 
-  const handleToggleLive = () => {
-    const nextState = !isLiveToStudent;
-    setIsLiveToStudent(nextState);
-    if (broadcast && isTeacher) {
-      broadcast('presentation:sync_state', {
-        documents,
-        activeDocIndex,
-        isLive: nextState
-      });
-    }
-  };
+  // Throttled Pointer Emitter (Max 25 updates/sec to protect Supabase channel)
+  const handlePointerMove = useCallback((e) => {
+    if (!pdfDataUrl || !containerRef.current || !broadcast) return;
+    const now = Date.now();
+    if (now - lastSendTimeRef.current < 40) return; // 25 fps
+    lastSendTimeRef.current = now;
 
-  const handleFileUpload = async (e) => {
+    const rect = containerRef.current.getBoundingClientRect();
+    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+    broadcast('pdf:laser_pointer', {
+      nx,
+      ny,
+      senderRole: currentUser?.role || (isTeacher ? 'teacher' : 'student'),
+      senderName: currentUser?.name || (isTeacher ? 'Teacher' : 'Student')
+    });
+  }, [pdfDataUrl, broadcast, currentUser, isTeacher]);
+
+  const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setUploadState({ isUploading: true, progress: 30, speed: '3.2 MB/s' });
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Only .pdf files are supported.');
+      return;
+    }
 
-    let finalUrl = '';
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${fileExt}`;
-    const filePath = `presentations/${fileName}`;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result;
+      if (typeof dataUrl === 'string') {
+        setPdfDataUrl(dataUrl);
+        setPdfName(file.name);
 
-    try {
-      const { data, error } = await supabase.storage
-        .from('classroom-assets')
-        .upload(filePath, file, { 
-          cacheControl: '86400', 
-          upsert: true,
-          contentType: file.type || 'application/octet-stream'
-        });
-
-      if (!error) {
-        const { data: publicUrlData } = supabase.storage
-          .from('classroom-assets')
-          .getPublicUrl(filePath);
-        finalUrl = publicUrlData.publicUrl;
+        if (broadcast) {
+          broadcast('pdf:load_document', {
+            dataUrl,
+            name: file.name
+          });
+        }
       }
-    } catch (err) {
-      console.warn('Storage upload error:', err);
-    }
-
-    if (!finalUrl) {
-      finalUrl = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.readAsDataURL(file);
-      });
-    }
-
-    setUploadState({ isUploading: false, progress: 100, speed: 'Done' });
-
-    const newDoc = {
-      id: `${Date.now()}`,
-      name: file.name,
-      url: finalUrl,
-      type: file.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'ppt'
     };
-
-    const updated = [...documents, newDoc];
-    const newIndex = updated.length - 1;
-    setDocuments(updated);
-    setActiveDocIndex(newIndex);
-
-    broadcastCurrentState(updated, newIndex);
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
-  const handleRemoveDoc = (indexToRemove) => {
-    const updated = documents.filter((_, idx) => idx !== indexToRemove);
-    const newIdx = Math.max(0, indexToRemove - 1);
-    setDocuments(updated);
-    setActiveDocIndex(newIdx);
-    broadcastCurrentState(updated, newIdx);
+  const handleClosePdf = () => {
+    setPdfDataUrl('');
+    setPdfName('');
+    setPeerPointer(null);
+    if (isTeacher && broadcast) {
+      broadcast('pdf:close_document', {});
+    }
   };
-
-  const activeDoc = documents[activeDocIndex] || null;
 
   return (
-    <div className="flex flex-col h-full w-full bg-slate-950 overflow-hidden relative select-none">
+    <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none">
       
-      {/* 1. Header Toolbar for Teacher */}
-      {isTeacher && (
-        <MediaBar 
-          currentAsset={activeDoc ? { title: activeDoc.name } : null}
-          isLiveToStudent={isLiveToStudent}
-          onToggleLive={handleToggleLive}
-          uploadState={uploadState}
-          onFileUpload={handleFileUpload}
-          drawingEnabled={drawingEnabled}
-          setDrawingEnabled={setDrawingEnabled}
-          tool={tool}
-          setTool={setTool}
-          onClearOverlay={() => broadcast && isTeacher && broadcast('presentation:clear_overlay', {})}
-        />
-      )}
+      {/* Top Header */}
+      <div className="h-10 bg-slate-900 border-b border-slate-800 px-3 flex items-center justify-between shrink-0 text-xs">
+        <div className="flex items-center gap-2 overflow-hidden max-w-[50%]">
+          <FileText className="w-4 h-4 text-rose-400 shrink-0" />
+          <span className="font-semibold text-slate-200 truncate text-[11px]" title={pdfName}>
+            {pdfName || 'No PDF Selected'}
+          </span>
+        </div>
 
-      {/* 2. Main Stage */}
-      <div className="flex-1 relative flex items-center justify-center p-2 overflow-hidden bg-slate-950">
-        
-        {documents.length === 0 ? (
-          <div className="text-center p-8 border border-dashed border-slate-800 rounded-3xl max-w-sm space-y-4">
-            <div className="w-14 h-14 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
-              <FileText className="w-7 h-7" />
-            </div>
-            <div>
-              <h4 className="text-white text-sm font-semibold">Presentation Tray Ready</h4>
-              <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                {isTeacher 
-                  ? 'Upload multiple PDF or PowerPoint files to present with instant sync.' 
-                  : 'Waiting for educator to start presenting...'}
-              </p>
-            </div>
+        <div className="flex items-center gap-2">
+          {pdfDataUrl && (
+            <button
+              onClick={() => setIsLaserActive(!isLaserActive)}
+              className={`px-2 py-0.5 rounded-lg border text-[10px] font-bold flex items-center gap-1 transition ${
+                isLaserActive 
+                  ? 'bg-rose-950/80 border-rose-500/50 text-rose-300' 
+                  : 'bg-slate-800 border-slate-700 text-slate-400'
+              }`}
+              title="Toggle Live Laser Pointer Layer"
+            >
+              <MousePointer className="w-3 h-3 text-rose-400" />
+              <span>Laser: {isLaserActive ? 'ON' : 'OFF'}</span>
+            </button>
+          )}
 
-            {isTeacher && (
-              <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl cursor-pointer transition shadow-lg shadow-indigo-600/30 mx-auto">
-                <Upload className="w-4 h-4" />
-                <span>Upload PDF / PPT</span>
-                <input 
-                  type="file" 
-                  accept=".pdf,.ppt,.pptx"
-                  onChange={handleFileUpload} 
-                  className="hidden" 
-                />
-              </label>
+          {isTeacher && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition shadow"
+              >
+                <Upload className="w-3 h-3" />
+                <span>Upload PDF</span>
+              </button>
+
+              {pdfDataUrl && (
+                <button
+                  onClick={handleClosePdf}
+                  className="p-1 bg-rose-950/40 border border-rose-500/30 text-rose-400 hover:text-white hover:bg-rose-600 rounded-lg transition"
+                  title="Close PDF"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </>
+          )}
+
+          {!isTeacher && !pdfDataUrl && (
+            <span className="text-[10px] text-slate-500 font-mono">
+              Waiting for educator to share PDF...
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* PDF VIEWER STAGE */}
+      <div 
+        ref={containerRef}
+        onMouseMove={handlePointerMove}
+        className="flex-1 w-full h-full bg-slate-950 flex items-center justify-center relative overflow-hidden"
+      >
+        {pdfDataUrl ? (
+          <div className="w-full h-full relative">
+            <object
+              data={`${pdfDataUrl}#toolbar=0&navpanes=0&scrollbar=1`}
+              type="application/pdf"
+              className="w-full h-full border-none rounded-none bg-white"
+            >
+              <iframe
+                src={`${pdfDataUrl}#toolbar=0&navpanes=0`}
+                title="PDF Document"
+                className="w-full h-full border-none bg-white"
+              />
+            </object>
+
+            {/* TRANSPARENT LASER INTERACTION OVERLAY (Catches mouse events over object/iframe) */}
+            {isLaserActive && (
+              <div 
+                onMouseMove={handlePointerMove}
+                className="absolute inset-0 z-20 cursor-crosshair bg-transparent"
+              />
+            )}
+
+            {/* LIVE PULSATING LASER POINTER WITH NAME BADGE */}
+            {peerPointer && (
+              <div 
+                className="absolute z-30 pointer-events-none transition-all duration-75 flex items-center gap-1.5"
+                style={{
+                  left: `${peerPointer.nx * 100}%`,
+                  top: `${peerPointer.ny * 100}%`,
+                  transform: 'translate(-50%, -50%)'
+                }}
+              >
+                <span className="relative flex h-4 w-4">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-80" />
+                  <span className="relative inline-flex rounded-full h-4 w-4 bg-rose-600 border-2 border-white shadow-xl" />
+                </span>
+                <span className="bg-slate-950/95 text-rose-300 border border-rose-500/50 text-[10px] font-mono px-1.5 py-0.5 rounded shadow-lg font-bold">
+                  {peerPointer.senderName}
+                </span>
+              </div>
             )}
           </div>
         ) : (
-          <PdfViewer 
-            documents={documents}
-            activeDocIndex={activeDocIndex}
-            onSelectDoc={(idx) => {
-              setActiveDocIndex(idx);
-              broadcastCurrentState(documents, idx);
-            }}
-            onRemoveDoc={handleRemoveDoc}
-            isTeacher={isTeacher}
-            broadcast={broadcast}
-            registerListener={registerListener}
-          />
-        )}
-
-        {/* Transparent Annotation Overlay */}
-        {activeDoc && (
-          <AnnotationLayer 
-            drawingEnabled={drawingEnabled}
-            tool={tool}
-            broadcast={broadcast}
-            registerListener={registerListener}
-            isTeacher={isTeacher}
-          />
+          <div className="text-center space-y-2 text-slate-500 max-w-sm p-4">
+            <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto text-rose-400">
+              <Eye className="w-6 h-6" />
+            </div>
+            <h3 className="text-xs font-bold text-slate-300">No PDF Document Open</h3>
+            <p className="text-[11px] text-slate-500">
+              {isTeacher
+                ? 'Click "Upload PDF" above to present exercises or question papers.'
+                : 'Educator has not shared any PDF yet.'}
+            </p>
+          </div>
         )}
       </div>
+
     </div>
   );
 }
