@@ -1,333 +1,237 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Mic, MicOff, Video, VideoOff, MessageSquare, Send, RefreshCw 
-} from 'lucide-react';
-
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-};
+import React, { useState, useRef, useEffect } from 'react';
+import { Mic, MicOff, Video, VideoOff, Monitor, MonitorOff, Send, MessageSquare } from 'lucide-react';
 
 export default function SideDock({
-  tutorName = 'Educator',
+  tutorName = 'Verified Educator',
   broadcast,
   registerListener,
   peersInRoom = [],
   isTeacher = false,
   currentUser
 }) {
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
-  const [hasRemoteStream, setHasRemoteStream] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
 
-  const [messages, setMessages] = useState([
-    { id: 1, sender: 'System', text: 'Welcome to the live session! Realtime doubts can be asked here.', isSystem: true }
-  ]);
-  const [inputText, setInputText] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const pcRef = useRef(null);
-  const chatBottomRef = useRef(null);
+  const screenStreamRef = useRef(null);
 
-  const myRole = isTeacher ? 'teacher' : 'student';
-  const otherRole = isTeacher ? 'student' : 'teacher';
-  const isPeerOnline = peersInRoom.some(p => p.role === otherRole);
-
+  // Chat & Stream Status Listeners
   useEffect(() => {
-    let active = true;
+    if (!registerListener) return;
 
-    async function initMedia() {
+    registerListener('chat:new_message', (msg) => {
+      setMessages((prev) => [...prev, msg]);
+    });
+
+    registerListener('stream:screen_share_status', (data) => {
+      if (data && data.senderRole !== currentUser?.role) {
+        // Handle remote peer stream alert if needed
+      }
+    });
+  }, [registerListener, currentUser]);
+
+  // SCREEN SHARING ENGINE (WebRTC getDisplayMedia)
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+        screenStreamRef.current = null;
+      }
+      setIsScreenSharing(false);
+      if (broadcast) {
+        broadcast('stream:screen_share_status', { isSharing: false, senderRole: currentUser?.role });
+      }
+    } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: 'always' },
+          audio: false
         });
-        if (!active) return;
 
-        localStreamRef.current = stream;
+        screenStreamRef.current = stream;
+        setIsScreenSharing(true);
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
 
-        setupPeerConnection(stream);
+        // When user stops sharing via browser bar
+        stream.getVideoTracks()[0].onended = () => {
+          setIsScreenSharing(false);
+          screenStreamRef.current = null;
+          if (broadcast) {
+            broadcast('stream:screen_share_status', { isSharing: false, senderRole: currentUser?.role });
+          }
+        };
+
+        if (broadcast) {
+          broadcast('stream:screen_share_status', { isSharing: true, senderRole: currentUser?.role });
+        }
       } catch (err) {
-        console.warn('Camera or Mic access failed:', err);
-      }
-    }
-
-    initMedia();
-
-    return () => {
-      active = false;
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(t => t.stop());
-      }
-      if (pcRef.current) {
-        pcRef.current.close();
-      }
-    };
-  }, []);
-
-  const setupPeerConnection = (stream) => {
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    pcRef.current = pc;
-
-    stream.getTracks().forEach((track) => {
-      pc.addTrack(track, stream);
-    });
-
-    pc.ontrack = (event) => {
-      if (remoteVideoRef.current && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        setHasRemoteStream(true);
-      }
-    };
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && broadcast) {
-        broadcast('webrtc:ice_candidate', {
-          candidate: event.candidate,
-          from: myRole,
-        });
-      }
-    };
-
-    if (registerListener) {
-      registerListener('webrtc:offer', async (data) => {
-        if (data.from !== myRole && pcRef.current) {
-          try {
-            await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await pcRef.current.createAnswer();
-            await pcRef.current.setLocalDescription(answer);
-            broadcast('webrtc:answer', { answer, from: myRole });
-          } catch (e) {
-            console.error('Error handling offer:', e);
-          }
-        }
-      });
-
-      registerListener('webrtc:answer', async (data) => {
-        if (data.from !== myRole && pcRef.current) {
-          try {
-            await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-          } catch (e) {
-            console.error('Error handling answer:', e);
-          }
-        }
-      });
-
-      registerListener('webrtc:ice_candidate', async (data) => {
-        if (data.from !== myRole && pcRef.current && data.candidate) {
-          try {
-            await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } catch (e) {
-            console.error('Error adding ICE candidate:', e);
-          }
-        }
-      });
-
-      registerListener('classroom:chat_message', (msg) => {
-        setMessages((prev) => [...prev, msg]);
-      });
-    }
-
-    if (isTeacher) {
-      createCallOffer(pc);
-    }
-  };
-
-  const createCallOffer = async (pc) => {
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      if (broadcast) {
-        broadcast('webrtc:offer', { offer, from: myRole });
-      }
-    } catch (err) {
-      console.error('Failed to create call offer:', err);
-    }
-  };
-
-  const toggleMute = () => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMuted(!audioTrack.enabled);
-      }
-    }
-  };
-
-  const toggleVideo = () => {
-    if (localStreamRef.current) {
-      const videoTrack = localStreamRef.current.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsVideoOff(!videoTrack.enabled);
+        console.warn('Screen sharing cancelled or not allowed:', err);
       }
     }
   };
 
   const handleSendMessage = (e) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
+    if (!chatInput.trim()) return;
 
     const newMsg = {
-      id: Date.now(),
+      id: `${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
       sender: currentUser?.name || (isTeacher ? 'Teacher' : 'Student'),
-      role: myRole,
-      text: inputText.trim(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      role: currentUser?.role || (isTeacher ? 'teacher' : 'student'),
+      text: chatInput.trim(),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     setMessages((prev) => [...prev, newMsg]);
     if (broadcast) {
-      broadcast('classroom:chat_message', newMsg);
+      broadcast('chat:new_message', newMsg);
     }
-    setInputText('');
+    setChatInput('');
   };
 
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
   return (
-    <div className="flex flex-col h-full w-full bg-slate-900 overflow-hidden">
+    <div className="flex flex-col h-full w-full bg-slate-900 border-l border-slate-800 select-none overflow-hidden">
       
-      {/* 1. Direct WebRTC Video Tiles */}
-      <div className="p-3 border-b border-slate-800 shrink-0 space-y-2">
+      {/* 1. TOP VIDEO & SCREEN SHARE TILES */}
+      <div className="p-3 border-b border-slate-800 space-y-2 shrink-0">
         <div className="grid grid-cols-2 gap-2">
           
-          {/* Local Tile */}
-          <div className="relative aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-inner">
-            <video 
-              ref={localVideoRef} 
-              autoPlay 
-              playsInline 
-              muted 
-              className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : 'block'}`}
+          {/* Your Tile (Camera or Screen Share) */}
+          <div className="relative aspect-video rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-full object-cover ${isScreenSharing ? 'block' : isVideoOn ? 'block' : 'hidden'}`}
             />
-            {isVideoOff && (
-              <div className="text-[10px] text-slate-500 font-mono">Camera Off</div>
-            )}
-            <div className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur-sm text-[9px] font-semibold text-slate-300 px-1.5 py-0.5 rounded">
-              You ({myRole})
-            </div>
-          </div>
-
-          {/* Remote Peer Video Tile */}
-          <div className="relative aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-inner">
-            <video 
-              ref={remoteVideoRef} 
-              autoPlay 
-              playsInline 
-              className={`w-full h-full object-cover ${hasRemoteStream ? 'block' : 'hidden'}`}
-            />
-            {!hasRemoteStream && (
-              <div className="text-center p-2">
-                <div className={`w-2 h-2 rounded-full mx-auto mb-1 ${isPeerOnline ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
-                <span className="text-[10px] text-slate-400 block font-medium">
-                  {isPeerOnline ? `Connecting ${otherRole}...` : `Waiting for ${otherRole}...`}
-                </span>
+            {!isVideoOn && !isScreenSharing && (
+              <div className="w-9 h-9 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 flex items-center justify-center font-bold text-xs">
+                You
               </div>
             )}
-            <div className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur-sm text-[9px] font-semibold text-emerald-400 px-1.5 py-0.5 rounded">
-              {otherRole === 'teacher' ? tutorName : 'Student'}
-            </div>
+            <span className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur px-1.5 py-0.5 rounded text-[9px] text-slate-300">
+              {currentUser?.name || (isTeacher ? 'Teacher' : 'Student')} {isScreenSharing && '(Sharing Screen)'}
+            </span>
           </div>
 
+          {/* Remote Peer Tile */}
+          <div className="relative aspect-video rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden">
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover hidden"
+            />
+            <div className="w-9 h-9 rounded-full bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center font-bold text-xs">
+              {isTeacher ? 'Student' : 'Teacher'}
+            </div>
+            <span className="absolute bottom-1 left-1.5 bg-black/60 backdrop-blur px-1.5 py-0.5 rounded text-[9px] text-slate-300">
+              {isTeacher ? 'Student' : tutorName}
+            </span>
+          </div>
         </div>
 
-        {/* Media Control Buttons */}
+        {/* Media Control Action Buttons */}
         <div className="flex items-center justify-center gap-2 pt-1">
+          {/* Mic */}
           <button
-            onClick={toggleMute}
-            className={`p-2 rounded-xl border text-xs flex items-center gap-1.5 transition ${
-              isMuted 
-                ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' 
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+            onClick={() => setIsMicOn(!isMicOn)}
+            className={`p-2 rounded-xl text-xs transition border ${
+              isMicOn ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-rose-600/20 border-rose-500/40 text-rose-400'
             }`}
+            title={isMicOn ? 'Mute Mic' : 'Unmute Mic'}
           >
-            {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-            <span className="text-[10px] font-semibold">{isMuted ? 'Muted' : 'Mute'}</span>
+            {isMicOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
           </button>
 
+          {/* Camera */}
           <button
-            onClick={toggleVideo}
-            className={`p-2 rounded-xl border text-xs flex items-center gap-1.5 transition ${
-              isVideoOff 
-                ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' 
-                : 'bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+            onClick={() => setIsVideoOn(!isVideoOn)}
+            className={`p-2 rounded-xl text-xs transition border ${
+              isVideoOn ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-slate-800/60 border-slate-700 text-slate-400'
             }`}
+            title={isVideoOn ? 'Turn Off Camera' : 'Turn On Camera'}
           >
-            {isVideoOff ? <VideoOff className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
-            <span className="text-[10px] font-semibold">{isVideoOff ? 'Cam Off' : 'Camera'}</span>
+            {isVideoOn ? <Video className="w-3.5 h-3.5 text-indigo-400" /> : <VideoOff className="w-3.5 h-3.5" />}
           </button>
 
-          {isTeacher && (
-            <button
-              onClick={() => pcRef.current && createCallOffer(pcRef.current)}
-              className="p-2 rounded-xl border border-slate-800 text-slate-400 hover:text-indigo-300 bg-slate-950 transition"
-              title="Reconnect Video Stream"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {/* SCREEN SHARE BUTTON (Teacher aur Student dono ke liye) */}
+          <button
+            onClick={toggleScreenShare}
+            className={`p-2 rounded-xl text-xs transition border flex items-center gap-1 ${
+              isScreenSharing
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30'
+                : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300 hover:text-white'
+            }`}
+            title={isScreenSharing ? 'Stop Screen Share' : 'Share Screen (Full Screen / Browser Tab / PPT)'}
+          >
+            {isScreenSharing ? <MonitorOff className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5 text-emerald-400" />}
+          </button>
         </div>
       </div>
 
-      {/* 2. Live Chat Workspace */}
-      <div className="flex-1 flex flex-col min-h-0 bg-slate-900">
-        <div className="p-2.5 border-b border-slate-800 flex items-center gap-2 text-xs font-semibold text-slate-300">
+      {/* 2. CHAT PANEL */}
+      <div className="flex-1 flex flex-col min-h-0 bg-slate-900/50">
+        <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-1.5 text-xs text-slate-400 font-semibold">
           <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
           <span>Live Session Chat</span>
         </div>
 
-        <div className="flex-1 p-3 overflow-y-auto space-y-2.5 text-xs min-h-0">
-          {messages.map((m) => (
-            <div 
-              key={m.id} 
-              className={`p-2.5 rounded-xl space-y-1 ${
-                m.isSystem 
-                  ? 'bg-slate-950/80 border border-slate-800/80 text-slate-400 text-center text-[11px]' 
-                  : m.role === myRole
-                    ? 'bg-indigo-600/20 border border-indigo-500/30 ml-4'
-                    : 'bg-slate-800/80 border border-slate-700/80 mr-4'
-              }`}
-            >
-              {!m.isSystem && (
-                <div className="flex justify-between items-center text-[10px] text-slate-400">
-                  <span className="font-bold text-slate-200">{m.sender}</span>
-                  <span className="font-mono">{m.time}</span>
+        <div className="flex-1 p-3 overflow-y-auto space-y-2.5 text-xs">
+          {messages.length === 0 ? (
+            <p className="text-[11px] text-slate-500 text-center py-4">
+              Welcome to the live session! Realtime doubts can be asked here.
+            </p>
+          ) : (
+            messages.map((m) => (
+              <div
+                key={m.id}
+                className={`flex flex-col ${m.role === currentUser?.role ? 'items-end' : 'items-start'}`}
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mb-0.5">
+                  <span className="font-bold text-slate-400">{m.sender}</span>
+                  <span>{m.time}</span>
                 </div>
-              )}
-              <p className="text-slate-200 text-xs break-words">{m.text}</p>
-            </div>
-          ))}
-          <div ref={chatBottomRef} />
+                <div
+                  className={`px-3 py-1.5 rounded-2xl max-w-[85%] break-words ${
+                    m.role === currentUser?.role
+                      ? 'bg-indigo-600 text-white rounded-tr-none'
+                      : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none'
+                  }`}
+                >
+                  {m.text}
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
-        <form onSubmit={handleSendMessage} className="p-2.5 border-t border-slate-800 bg-slate-950 flex gap-2">
+        {/* Input */}
+        <form onSubmit={handleSendMessage} className="p-2 border-t border-slate-800 flex items-center gap-1.5 bg-slate-950">
           <input
             type="text"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
             placeholder="Type doubt or question..."
-            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
+            className="flex-1 bg-slate-900 border border-slate-800 text-slate-200 text-xs px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-500 placeholder:text-slate-600"
           />
           <button
             type="submit"
-            className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-xl transition shadow"
+            className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition"
           >
             <Send className="w-3.5 h-3.5" />
           </button>
         </form>
       </div>
-
     </div>
   );
 }

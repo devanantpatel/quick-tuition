@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PenTool, Code, MessageSquare, Wifi, WifiOff, Columns, Presentation } from 'lucide-react';
+import { PenTool, Layers, MessageSquare, Wifi, WifiOff, Lock, Unlock, Code, FileText } from 'lucide-react';
 import ClassroomHeader from './ClassroomHeader';
 import Whiteboard from './Whiteboard';
 import CodePlayground from './CodePlayground';
@@ -21,35 +21,36 @@ export default function LiveClassroom() {
   const ratePerMin = activeSession?.rate ?? 5;
   const tutorName = activeSession?.teacherName || activeSession?.teacher_name || 'Verified Educator';
 
-  // Workspace View: 'board' | 'code' | 'presentation' | 'split' | 'chat'
-  const [workspaceMode, setWorkspaceMode] = useState('board');
+  // 3 Core Tabs: 'whiteboard' | 'other' | 'call_chat'
+  const [activeMainTab, setActiveMainTab] = useState('whiteboard');
 
-  // Master Permissions
+  // 'Other' Hub Sub-tools: 'presentation' (PDF/PPT) | 'code' (Code Playground)
+  const [otherSubTool, setOtherSubTool] = useState('presentation');
+
+  // Teacher Screen Lock Sync
+  const [lockStudentView, setLockStudentView] = useState(true);
+
+  // Permissions & State
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   const [isStudentCodeAllowed, setIsStudentCodeAllowed] = useState(false);
-
-  // Receipt Modal State
   const [showReceipt, setShowReceipt] = useState(false);
   const [finalSeconds, setFinalSeconds] = useState(0);
 
-  // Realtime Supabase Channel
   const { isConnected, broadcast, registerListener, peersInRoom } = useClassroomSync(
     roomId,
     userRole,
     userName
   );
 
+  // Student Sync Listener
   useEffect(() => {
-    registerListener('host:permissions', (data) => {
-      if (!isTeacher) {
-        setIsStudentAllowed(Boolean(data.isStudentAllowed));
-        setIsStudentCodeAllowed(Boolean(data.isStudentCodeAllowed));
-      }
-    });
+    if (!registerListener) return;
 
-    registerListener('host:view_mode', (data) => {
-      if (!isTeacher && data.mode) {
-        setWorkspaceMode(data.mode);
+    registerListener('classroom:sync_view', (data) => {
+      if (!isTeacher && data) {
+        if (data.mainTab) setActiveMainTab(data.mainTab);
+        if (data.subTool) setOtherSubTool(data.subTool);
+        if (data.lockStudentView !== undefined) setLockStudentView(data.lockStudentView);
       }
     });
 
@@ -59,53 +60,76 @@ export default function LiveClassroom() {
         setShowReceipt(true);
       }
     });
-  }, [isTeacher, registerListener]);
+  }, [registerListener, isTeacher]);
 
-  const updatePermissions = (boardAllowed, codeAllowed) => {
-    setIsStudentAllowed(boardAllowed);
-    setIsStudentCodeAllowed(codeAllowed);
-    broadcast('host:permissions', {
-      isStudentAllowed: boardAllowed,
-      isStudentCodeAllowed: codeAllowed,
-    });
-  };
-
-  const handleModeChange = (mode) => {
-    setWorkspaceMode(mode);
-    if (isTeacher) {
-      broadcast('host:view_mode', { mode });
+  const handleMainTabChange = (tab) => {
+    setActiveMainTab(tab);
+    if (isTeacher && broadcast) {
+      broadcast('classroom:sync_view', {
+        mainTab: tab,
+        subTool: otherSubTool,
+        lockStudentView
+      });
     }
   };
 
-  // Leave room temporary (no receipt)
+  const handleSubToolChange = (sub) => {
+    setOtherSubTool(sub);
+    if (isTeacher && broadcast) {
+      broadcast('classroom:sync_view', {
+        mainTab: activeMainTab,
+        subTool: sub,
+        lockStudentView
+      });
+    }
+  };
+
+  const toggleLockView = () => {
+    const nextLock = !lockStudentView;
+    setLockStudentView(nextLock);
+    if (isTeacher && broadcast) {
+      broadcast('classroom:sync_view', {
+        mainTab: activeMainTab,
+        subTool: otherSubTool,
+        lockStudentView: nextLock
+      });
+    }
+  };
+
   const handleLeaveOnly = () => {
     setActiveTab(isTeacher ? 'teacher' : 'student');
   };
 
-  // Final Complete Session
   const handleEndSession = async (elapsedSec = 0) => {
     setFinalSeconds(elapsedSec);
 
-    let whiteboardData = null;
+    // 1. Export All Whiteboard Pages to a Single Multi-Page PDF Document
+    let multiPageNotesData = null;
     try {
-      const canvases = document.querySelectorAll('canvas');
-      for (let c of canvases) {
-        if (c.width > 300 && c.height > 300) {
-          whiteboardData = c.toDataURL('image/jpeg', 0.6);
-          break;
+      if (typeof window !== 'undefined' && window.__exportWhiteboardAllPages) {
+        multiPageNotesData = await window.__exportWhiteboardAllPages();
+      } else {
+        const canvases = document.querySelectorAll('canvas');
+        for (let c of canvases) {
+          if (c.width > 300 && c.height > 300) {
+            multiPageNotesData = c.toDataURL('image/jpeg', 0.6);
+            break;
+          }
         }
       }
     } catch (e) {
-      console.warn('Canvas capture error:', e);
+      console.warn('Whiteboard Multi-page PDF Export failed:', e);
     }
 
+    // 2. Persist to Supabase Database
     const bookingId = activeSession?.id;
-    if (bookingId && whiteboardData) {
+    if (bookingId && multiPageNotesData) {
       try {
         await saveSessionNotes(bookingId, {
-          whiteboardNotes: whiteboardData,
-          codeNotes: '// Session Notes Completed'
+          whiteboardNotes: multiPageNotesData,
+          codeNotes: '// Complete Mentorship Session Notes'
         });
+        console.log('Multi-page session notes saved successfully for booking:', bookingId);
       } catch (err) {
         console.error('saveSessionNotes error:', err);
       }
@@ -118,14 +142,10 @@ export default function LiveClassroom() {
     setShowReceipt(true);
   };
 
-  const handleRedirectToDashboard = () => {
-    setShowReceipt(false);
-    setActiveTab(isTeacher ? 'teacher' : 'student');
-  };
-
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-slate-950 overflow-hidden relative">
-      {/* 1. Header with Live Timer, Presence & Session Meta */}
+      
+      {/* 1. Header with presence timer */}
       <ClassroomHeader
         subjectTitle={subjectTitle}
         ratePerMin={ratePerMin}
@@ -140,66 +160,120 @@ export default function LiveClassroom() {
         <div className="flex items-center gap-2 font-mono">
           {isConnected ? (
             <span className="text-emerald-400 flex items-center gap-1.5">
-              <Wifi className="w-3.5 h-3.5" /> Channel: Connected ({roomId})
+              <Wifi className="w-3.5 h-3.5" /> Room Active ({roomId})
             </span>
           ) : (
             <span className="text-amber-400 flex items-center gap-1.5">
-              <WifiOff className="w-3.5 h-3.5 animate-pulse" /> Connecting Channel...
+              <WifiOff className="w-3.5 h-3.5 animate-pulse" /> Reconnecting...
             </span>
           )}
         </div>
-        <div className="text-slate-400 font-sans text-xs">
-          Role: <strong className="text-white capitalize">{currentUser?.role || 'Guest'}</strong>
+
+        <div className="flex items-center gap-3">
+          {isTeacher ? (
+            <button
+              onClick={toggleLockView}
+              className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border transition ${
+                lockStudentView
+                  ? 'bg-indigo-950/80 border-indigo-500/50 text-indigo-300'
+                  : 'bg-slate-800 border-slate-700 text-slate-400'
+              }`}
+            >
+              {lockStudentView ? <Lock className="w-3 h-3 text-indigo-400" /> : <Unlock className="w-3 h-3" />}
+              <span>{lockStudentView ? 'Student View: Locked' : 'Student Free-View'}</span>
+            </button>
+          ) : lockStudentView ? (
+            <span className="text-[10px] text-indigo-300 bg-indigo-950/60 border border-indigo-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+              <Lock className="w-2.5 h-2.5" /> Following Teacher Screen
+            </span>
+          ) : null}
+
+          <span className="text-slate-400 text-xs">
+            Role: <strong className="text-white capitalize">{userRole}</strong>
+          </span>
         </div>
       </div>
 
-      {/* 2. Main Persistent Simultaneous Workspace */}
+      {/* 2. Workspace Viewport */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative min-h-0 pb-16 lg:pb-0">
         
+        {/* Main Stage (Whiteboard or Other Hub) */}
         <div className={`flex-1 flex flex-col h-full overflow-hidden relative min-h-0 ${
-          workspaceMode === 'chat' ? 'hidden lg:flex' : 'flex'
+          activeMainTab === 'call_chat' ? 'hidden lg:flex' : 'flex'
         }`}>
 
-          {/* PERSISTENT WHITEBOARD */}
+          {/* TAB 1: WHITEBOARD */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
-            workspaceMode === 'board' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
+            activeMainTab === 'whiteboard' ? 'flex flex-1' : 'hidden'
           }`}>
             <Whiteboard 
               isStudentAllowed={isStudentAllowed}
-              setIsStudentAllowed={(val) => updatePermissions(val, isStudentCodeAllowed)}
+              setIsStudentAllowed={setIsStudentAllowed}
               broadcast={broadcast}
               registerListener={registerListener}
             />
           </div>
 
-          {/* PERSISTENT CODE PLAYGROUND */}
+          {/* TAB 2: OTHER HUB (PDF/PPT & Code Playground Only) */}
           <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
-            workspaceMode === 'code' || workspaceMode === 'split' ? 'flex flex-1' : 'hidden'
+            activeMainTab === 'other' ? 'flex flex-1' : 'hidden'
           }`}>
-            <CodePlayground 
-              isStudentCodeAllowed={isStudentCodeAllowed}
-              setIsStudentCodeAllowed={(val) => updatePermissions(isStudentAllowed, val)}
-              broadcast={broadcast}
-              registerListener={registerListener}
-            />
-          </div>
+            
+            {/* Sub-Switch Bar inside 'Other' tab */}
+            <div className="bg-slate-900 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button
+                  disabled={!isTeacher && lockStudentView}
+                  onClick={() => handleSubToolChange('presentation')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                    otherSubTool === 'presentation' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>PDF / PPT Presentation</span>
+                </button>
 
-          {/* PERSISTENT PRESENTATION & ANNOTATION VIEWER */}
-          <div className={`h-full flex-col min-h-0 overflow-hidden relative ${
-            workspaceMode === 'presentation' ? 'flex flex-1' : 'hidden'
-          }`}>
-            <PresentationViewer 
-              broadcast={broadcast}
-              registerListener={registerListener}
-              isTeacher={isTeacher}
-            />
+                <button
+                  disabled={!isTeacher && lockStudentView}
+                  onClick={() => handleSubToolChange('code')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                    otherSubTool === 'code' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Code className="w-3.5 h-3.5" />
+                  <span>Code Playground</span>
+                </button>
+              </div>
+
+              <span className="text-[11px] font-mono text-slate-400 hidden sm:inline">
+                Selected: <strong className="text-indigo-400">{otherSubTool === 'presentation' ? 'PDF / PPT' : 'Code Playground'}</strong>
+              </span>
+            </div>
+
+            {/* Sub-Components Viewport */}
+            <div className="flex-1 w-full h-full overflow-hidden relative min-h-0">
+              {otherSubTool === 'presentation' ? (
+                <PresentationViewer 
+                  broadcast={broadcast}
+                  registerListener={registerListener}
+                  isTeacher={isTeacher}
+                />
+              ) : (
+                <CodePlayground 
+                  isStudentCodeAllowed={isStudentCodeAllowed}
+                  setIsStudentCodeAllowed={setIsStudentCodeAllowed}
+                  broadcast={broadcast}
+                  registerListener={registerListener}
+                />
+              )}
+            </div>
           </div>
 
         </div>
 
-        {/* 3. SideDock with Video Call & Chat */}
+        {/* TAB 3 / SIDEDOCK: VIDEO CALL & CHAT */}
         <div className={`w-full lg:w-80 xl:w-96 h-full flex flex-col min-h-0 border-l border-slate-800/80 bg-slate-900 ${
-          workspaceMode === 'chat' ? 'flex flex-1' : 'hidden lg:flex'
+          activeMainTab === 'call_chat' ? 'flex flex-1' : 'hidden lg:flex'
         }`}>
           <SideDock 
             tutorName={tutorName}
@@ -212,61 +286,52 @@ export default function LiveClassroom() {
         </div>
       </div>
 
-      {/* 4. RESPONSIVE FLOATING WORKSPACE CONTROLLER (Mobile + Desktop Both Fixed) */}
-      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 sm:gap-1.5 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl max-w-[96vw] overflow-x-auto">
+      {/* 3. BOTTOM FIXED 3-TAB SWITCHER */}
+      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 p-1.5 rounded-2xl shadow-2xl">
+        
+        {/* Tab 1: Whiteboard */}
         <button
-          onClick={() => handleModeChange('board')}
-          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
-            workspaceMode === 'board' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          disabled={!isTeacher && lockStudentView}
+          onClick={() => handleMainTabChange('whiteboard')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+            activeMainTab === 'whiteboard'
+              ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
-          <PenTool className="w-3.5 h-3.5" />
+          <PenTool className="w-4 h-4" />
           <span>Whiteboard</span>
         </button>
 
+        {/* Tab 2: Other Hub (PDF/PPT & Code) */}
         <button
-          onClick={() => handleModeChange('code')}
-          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
-            workspaceMode === 'code' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          disabled={!isTeacher && lockStudentView}
+          onClick={() => handleMainTabChange('other')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed ${
+            activeMainTab === 'other'
+              ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
-          <Code className="w-3.5 h-3.5" />
-          <span>Code Editor</span>
+          <Layers className="w-4 h-4" />
+          <span>Other</span>
         </button>
 
+        {/* Tab 3: Call & Chat (Mobile View Toggle) */}
         <button
-          onClick={() => handleModeChange('presentation')}
-          className={`px-3 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center gap-1.5 transition shrink-0 ${
-            workspaceMode === 'presentation' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          onClick={() => handleMainTabChange('call_chat')}
+          className={`lg:hidden px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition ${
+            activeMainTab === 'call_chat'
+              ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
+              : 'text-amber-400 hover:text-white hover:bg-slate-800'
           }`}
         >
-          <Presentation className="w-3.5 h-3.5" />
-          <span>Slides</span>
-        </button>
-
-        <button
-          onClick={() => handleModeChange('split')}
-          className={`hidden md:flex px-3 py-1.5 rounded-xl text-xs font-semibold items-center gap-1.5 transition shrink-0 ${
-            workspaceMode === 'split' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <Columns className="w-3.5 h-3.5" />
-          <span>Split</span>
-        </button>
-
-        {/* Mobile View Video/Chat Switcher Tab */}
-        <button
-          onClick={() => handleModeChange('chat')}
-          className={`lg:hidden px-3 py-1.5 rounded-xl text-[11px] font-semibold flex items-center gap-1.5 transition shrink-0 ${
-            workspaceMode === 'chat' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
+          <MessageSquare className="w-4 h-4" />
           <span>Call & Chat</span>
         </button>
       </div>
 
-      {/* 5. Post-Session Receipt Modal */}
+      {/* 4. Session Receipt Modal */}
       <SessionReceiptModal
         isOpen={showReceipt}
         totalSeconds={finalSeconds}
@@ -275,7 +340,10 @@ export default function LiveClassroom() {
         subjectTitle={subjectTitle}
         userRole={currentUser?.role || 'student'}
         activeSession={activeSession}
-        onCloseAndRedirect={handleRedirectToDashboard}
+        onCloseAndRedirect={() => {
+          setShowReceipt(false);
+          setActiveTab(isTeacher ? 'teacher' : 'student');
+        }}
       />
     </div>
   );
