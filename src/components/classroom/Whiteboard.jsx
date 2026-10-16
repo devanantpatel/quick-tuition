@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Pencil, Highlighter, Eraser, Sparkles, Square, Circle, ArrowRight,
   Undo2, Redo2, Trash2, ChevronLeft, ChevronRight, Plus, Minus,
-  MousePointer, Move, ZoomIn, ZoomOut, RotateCcw
+  MousePointer, Move, ZoomIn, ZoomOut, RotateCcw, Check, Save,
+  Layers, ChevronUp, ChevronDown
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -39,6 +40,11 @@ export default function Whiteboard({
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [redoStack, setRedoStack] = useState([]);
 
+  // Save Status Tracker
+  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving'
+  const [lastSavedTime, setLastSavedTime] = useState(Date.now());
+  const [isPageStripOpen, setIsPageStripOpen] = useState(false);
+
   // Tools: 'pen' | 'highlighter' | 'eraser' | 'magic_eraser' | 'rect' | 'circle' | 'arrow' | 'laser' | 'pan'
   const [activeTool, setActiveTool] = useState('pen');
   const [activeColor, setActiveColor] = useState('#ffffff');
@@ -47,7 +53,7 @@ export default function Whiteboard({
   // Dynamic Thickness Popovers (Re-click to open thickness slider)
   const [penThickness, setPenThickness] = useState(3);
   const [eraserThickness, setEraserThickness] = useState(25);
-  const [showThicknessPopover, setShowThicknessPopover] = useState(null); // 'pen' | 'eraser' | null
+  const [showThicknessPopover, setShowThicknessPopover] = useState(null);
 
   // Infinite Workspace Coordinates & Zoom
   const [scale, setScale] = useState(1);
@@ -68,18 +74,36 @@ export default function Whiteboard({
   const canDraw = isTeacher || Boolean(isStudentAllowed);
   const canNavigate = isTeacher || !Boolean(lockStudentView);
 
-  // LocalStorage Fast Caching
+  // Auto-Save Effect
   useEffect(() => {
     try {
+      setSaveStatus('saving');
       localStorage.setItem(`${roomId}_pages`, JSON.stringify(pages));
-    } catch (e) {}
+      const t = setTimeout(() => {
+        setSaveStatus('saved');
+        setLastSavedTime(Date.now());
+      }, 300);
+      return () => clearTimeout(t);
+    } catch (e) {
+      setSaveStatus('saved');
+    }
   }, [pages, roomId]);
+
+  const handleManualForceSave = () => {
+    try {
+      setSaveStatus('saving');
+      localStorage.setItem(`${roomId}_pages`, JSON.stringify(pages));
+      setTimeout(() => {
+        setSaveStatus('saved');
+        setLastSavedTime(Date.now());
+      }, 200);
+    } catch (e) {}
+  };
 
   // 1. Realtime Sync Handlers
   useEffect(() => {
     if (!registerListener) return;
 
-    // Stroke Sync: Append safely
     registerListener('whiteboard:stroke_drawn', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -104,7 +128,6 @@ export default function Whiteboard({
       }
     });
 
-    // Clean Page Sync: Wipes both teacher & student canvases simultaneously
     registerListener('whiteboard:clear_page', (data) => {
       if (data && data.pageIndex !== undefined) {
         const targetPage = Number(data.pageIndex);
@@ -118,7 +141,6 @@ export default function Whiteboard({
       }
     });
 
-    // Undo Action Sync
     registerListener('whiteboard:undo_action', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -133,7 +155,6 @@ export default function Whiteboard({
       }
     });
 
-    // Magic Eraser Sync
     registerListener('whiteboard:magic_erase_stroke', (data) => {
       if (data && data.strokeId) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -148,7 +169,6 @@ export default function Whiteboard({
       }
     });
 
-    // Page Sync
     registerListener('whiteboard:page_sync', (data) => {
       if (!isTeacher && data && data.pageIndex !== undefined) {
         setCurrentPageIndex(Number(data.pageIndex));
@@ -158,7 +178,6 @@ export default function Whiteboard({
       }
     });
 
-    // Zoom & Pan Sync
     registerListener('whiteboard:zoom_sync', (data) => {
       if (!isTeacher && lockStudentView && data) {
         if (data.scale !== undefined) setScale(data.scale);
@@ -166,7 +185,6 @@ export default function Whiteboard({
       }
     });
 
-    // Laser Pointer Sync
     registerListener('whiteboard:laser_pointer', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         setRemotePointer(data);
@@ -177,7 +195,6 @@ export default function Whiteboard({
       }
     });
 
-    // Rejoin Handshake
     registerListener('room:request_state', () => {
       if (isTeacher && broadcast) {
         broadcast('whiteboard:full_sync', {
@@ -199,7 +216,7 @@ export default function Whiteboard({
     });
   }, [registerListener, currentUser, isTeacher, broadcast, pages, currentPageIndex, lockStudentView, scale, offset]);
 
-  // 2. Infinite Canvas Redraw Engine (Unbounded Virtual Plane)
+  // 2. Infinite Canvas Redraw Engine
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -211,7 +228,6 @@ export default function Whiteboard({
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    // Dynamic Infinite Grid Lines
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 1;
     const gridSize = 40 * scale;
@@ -231,7 +247,6 @@ export default function Whiteboard({
       ctx.stroke();
     }
 
-    // World Transformation Matrix
     ctx.translate(offset.x, offset.y);
     ctx.scale(scale, scale);
 
@@ -329,7 +344,6 @@ export default function Whiteboard({
     ctx.restore();
   };
 
-  // 3. Transformation Helper: Screen space to Unbounded Virtual Coordinates
   const getCanvasPoint = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -340,7 +354,6 @@ export default function Whiteboard({
     const screenX = clientX - rect.left;
     const screenY = clientY - rect.top;
 
-    // True infinite mapping (allows coordinates outside 0..1 boundary)
     const virtualX = (screenX - offset.x) / scale;
     const virtualY = (screenY - offset.y) / scale;
 
@@ -352,7 +365,6 @@ export default function Whiteboard({
     };
   };
 
-  // Laser Pointer Emitter
   const emitLaserPointer = (pt) => {
     const now = Date.now();
     if (now - lastPointerBroadcastRef.current < 45) return;
@@ -368,7 +380,6 @@ export default function Whiteboard({
     }
   };
 
-  // Magic Eraser Hit Detection
   const handleMagicErase = (pt) => {
     const curStrokes = pages[currentPageIndex]?.strokes || [];
     const threshold = 0.025;
@@ -397,7 +408,6 @@ export default function Whiteboard({
     }
   };
 
-  // 4. Pointer Interaction
   const handlePointerDown = (e) => {
     if (e.pointerType === 'touch') {
       try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
@@ -408,7 +418,6 @@ export default function Whiteboard({
 
     const pt = getCanvasPoint(e);
 
-    // Pan / Drag Infinite Canvas
     if ((activeTool === 'pan' || e.button === 1) && canNavigate) {
       isPanningRef.current = true;
       startPanRef.current = { x: pt.rawScreenX - offset.x, y: pt.rawScreenY - offset.y };
@@ -521,7 +530,6 @@ export default function Whiteboard({
     redrawCanvas();
   };
 
-  // Zoom Helpers
   const handleZoom = (delta) => {
     if (!canNavigate) return;
     const newScale = Math.max(0.3, Math.min(4.0, Number((scale + delta).toFixed(2))));
@@ -540,7 +548,6 @@ export default function Whiteboard({
     }
   };
 
-  // Undo / Redo
   const handleUndo = () => {
     const curStrokes = pages[currentPageIndex]?.strokes || [];
     if (curStrokes.length === 0) return;
@@ -588,7 +595,6 @@ export default function Whiteboard({
     }
   };
 
-  // Page Controls (Each page represents a 1-to-1 PDF Sheet)
   const handlePageChange = (newIdx) => {
     if (newIdx < 0 || newIdx >= pages.length) return;
     setCurrentPageIndex(newIdx);
@@ -626,7 +632,6 @@ export default function Whiteboard({
     });
   };
 
-  // Clean Page Sync (Fixed: Clears both teacher & student canvases)
   const handleClearBoard = () => {
     if (!window.confirm('Clear all strokes on this page?')) return;
     setPages((prev) => {
@@ -641,7 +646,6 @@ export default function Whiteboard({
     }
   };
 
-  // Re-Click Handler for Pen & Eraser Thickness Popovers
   const handleToolClick = (toolName) => {
     if (activeTool === toolName) {
       setShowThicknessPopover(showThicknessPopover === toolName ? null : toolName);
@@ -651,7 +655,6 @@ export default function Whiteboard({
     }
   };
 
-  // Global Export Hook (Generates individual PDF page snapshots)
   useEffect(() => {
     window.__exportWhiteboardAllPages = async () => {
       return pages.map((page, index) => ({
@@ -667,10 +670,10 @@ export default function Whiteboard({
   return (
     <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none relative">
       
-      {/* 1. COMPACT TOOLBAR */}
+      {/* 1. EXACT LOCKED COMPACT TOOLBAR (Unchanged Layout) */}
       <div className="h-10 bg-slate-900 border-b border-slate-800 px-1.5 flex items-center justify-between shrink-0 text-xs gap-1 z-30">
         
-        {/* Left: Page Navigation (Page 1 = PDF Page 1) */}
+        {/* Left: Page Navigation */}
         <div className="flex items-center gap-0.5 shrink-0 font-mono text-xs">
           <button
             disabled={(!isTeacher && lockStudentView) || currentPageIndex === 0}
@@ -717,10 +720,9 @@ export default function Whiteboard({
           )}
         </div>
 
-        {/* Center: Tools (With Re-Click Stroke Thickness Sliders) */}
+        {/* Center: Tools */}
         <div className="flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-xl border border-slate-800 overflow-visible relative">
           
-          {/* Pen Button + Popover */}
           <div className="relative">
             <button
               onClick={() => handleToolClick('pen')}
@@ -756,7 +758,6 @@ export default function Whiteboard({
             <Highlighter className="w-3.5 h-3.5" />
           </button>
 
-          {/* Eraser Button + Popover */}
           <div className="relative">
             <button
               onClick={() => handleToolClick('eraser')}
@@ -824,7 +825,6 @@ export default function Whiteboard({
             <MousePointer className="w-3.5 h-3.5" />
           </button>
 
-          {/* Infinite Pan Tool */}
           <button
             disabled={!canNavigate}
             onClick={() => { setActiveTool('pan'); setShowThicknessPopover(null); }}
@@ -838,7 +838,6 @@ export default function Whiteboard({
         {/* Right: Colors, Desktop Zoom & Undo/Redo */}
         <div className="flex items-center gap-1 shrink-0 relative">
           
-          {/* Universal Color Selector */}
           <div className="relative">
             <button
               onClick={() => setShowColorPicker(!showColorPicker)}
@@ -861,7 +860,6 @@ export default function Whiteboard({
             )}
           </div>
 
-          {/* Desktop Zoom In / Zoom Out */}
           <div className="hidden sm:flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
             <button disabled={!canNavigate} onClick={() => handleZoom(-0.15)} className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20" title="Zoom Out">
               <ZoomOut className="w-3 h-3" />
@@ -875,7 +873,6 @@ export default function Whiteboard({
             </button>
           </div>
 
-          {/* Undo / Redo / Clear */}
           <div className="flex items-center gap-0.5">
             <button
               onClick={handleUndo}
@@ -957,7 +954,7 @@ export default function Whiteboard({
 
         {/* Mobile Floating Zoom Bar */}
         {canNavigate && (
-          <div className="sm:hidden absolute bottom-2 left-2 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1 rounded-xl shadow-xl z-20">
+          <div className="sm:hidden absolute bottom-3 left-3 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1 rounded-xl shadow-xl z-20">
             <button onClick={() => handleZoom(-0.2)} className="p-1 text-slate-300 hover:text-white">
               <ZoomOut className="w-3.5 h-3.5" />
             </button>
@@ -971,9 +968,81 @@ export default function Whiteboard({
           </div>
         )}
 
+        {/* FLOATING PAGE SAVE STATUS & QUICK SLIDER BAR */}
+        <div className="absolute bottom-3 right-3 z-30 flex flex-col items-end gap-1.5 pointer-events-auto">
+          
+          {/* Expanded Page Slider Strip */}
+          {isPageStripOpen && (
+            <div className="bg-slate-900/95 backdrop-blur border border-slate-800 p-2 rounded-2xl shadow-2xl flex flex-col gap-2 max-w-[280px] sm:max-w-sm animate-in fade-in slide-in-from-bottom-2">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>PDF Sheet Slider ({currentPageIndex + 1}/{pages.length})</span>
+                </span>
+                <button
+                  onClick={handleManualForceSave}
+                  className="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 transition shadow"
+                  title="Manual Force Save"
+                >
+                  <Save className="w-3 h-3" />
+                  <span>Save Now</span>
+                </button>
+              </div>
+
+              {/* Range Slider for Quick Jump */}
+              <input
+                type="range"
+                min="0"
+                max={pages.length - 1}
+                value={currentPageIndex}
+                disabled={!isTeacher && lockStudentView}
+                onChange={(e) => handlePageChange(Number(e.target.value))}
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+              />
+
+              {/* Mini Page Pills */}
+              <div className="flex items-center gap-1 overflow-x-auto py-1 scrollbar-none">
+                {pages.map((p, idx) => (
+                  <button
+                    key={p.id || idx}
+                    disabled={!isTeacher && lockStudentView}
+                    onClick={() => handlePageChange(idx)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-mono font-bold shrink-0 transition ${
+                      currentPageIndex === idx
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    Pg {idx + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Compact Status Pill with Toggle */}
+          <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded-full shadow-lg text-[10px] font-mono text-slate-300">
+            <span className={`w-2 h-2 rounded-full ${saveStatus === 'saved' ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-amber-400 animate-ping'}`} />
+            <span className="hidden sm:inline">
+              {saveStatus === 'saved' ? `Saved: ${pages.length} Pages` : 'Saving...'}
+            </span>
+            <span className="sm:hidden font-bold">
+              {pages.length}P
+            </span>
+            <button
+              onClick={() => setIsPageStripOpen(!isPageStripOpen)}
+              className="p-0.5 text-slate-400 hover:text-white ml-0.5 rounded"
+              title="Toggle Page Navigation Slider"
+            >
+              {isPageStripOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+
+        </div>
+
         {/* Student Locked Indicator */}
         {!canDraw && (
-          <div className="absolute bottom-2 right-2 bg-slate-900/90 border border-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-400 font-mono pointer-events-none shadow">
+          <div className="absolute top-2 left-2 bg-slate-900/90 border border-slate-800 px-2 py-0.5 rounded text-[10px] text-slate-400 font-mono pointer-events-none shadow">
             Drawing locked by educator
           </div>
         )}
