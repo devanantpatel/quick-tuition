@@ -26,7 +26,7 @@ export default function Whiteboard({
   const { activeSession, currentUser } = useApp();
   const roomId = activeSession?.id ? `board_cache_${activeSession.id}` : 'board_cache_default';
 
-  // Multi-Page Canvas State
+  // Multi-Page Management (Page 1 = PDF Sheet 1, Page 2 = PDF Sheet 2)
   const [pages, setPages] = useState(() => {
     try {
       const saved = localStorage.getItem(`${roomId}_pages`);
@@ -43,9 +43,13 @@ export default function Whiteboard({
   const [activeTool, setActiveTool] = useState('pen');
   const [activeColor, setActiveColor] = useState('#ffffff');
   const [showColorPicker, setShowColorPicker] = useState(false);
-  const strokeWidth = 3;
 
-  // Zoom & Pan Matrix
+  // Dynamic Thickness Popovers (Re-click to open thickness slider)
+  const [penThickness, setPenThickness] = useState(3);
+  const [eraserThickness, setEraserThickness] = useState(25);
+  const [showThicknessPopover, setShowThicknessPopover] = useState(null); // 'pen' | 'eraser' | null
+
+  // Infinite Workspace Coordinates & Zoom
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const isPanningRef = useRef(false);
@@ -61,23 +65,21 @@ export default function Whiteboard({
   const currentStrokeRef = useRef(null);
   const lastPointerBroadcastRef = useRef(0);
 
-  // Student can draw ONLY if Teacher allowed
   const canDraw = isTeacher || Boolean(isStudentAllowed);
-  // Student can zoom/pan ONLY if Teacher has NOT locked view
   const canNavigate = isTeacher || !Boolean(lockStudentView);
 
-  // Cache persistence
+  // LocalStorage Fast Caching
   useEffect(() => {
     try {
       localStorage.setItem(`${roomId}_pages`, JSON.stringify(pages));
     } catch (e) {}
   }, [pages, roomId]);
 
-  // 1. STABLE REALTIME SYNC (Zero-Collision Stroke Injection)
+  // 1. Realtime Sync Handlers
   useEffect(() => {
     if (!registerListener) return;
 
-    // Stroke Sync: Append without wiping existing strokes
+    // Stroke Sync: Append safely
     registerListener('whiteboard:stroke_drawn', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -87,7 +89,6 @@ export default function Whiteboard({
         setPages((prevPages) => {
           const next = prevPages.map((pg, idx) => {
             if (idx === targetPage) {
-              // Avoid duplicate strokes
               const exists = pg.strokes.some((s) => s.id === incomingStroke.id);
               if (exists) return pg;
               return { ...pg, strokes: [...pg.strokes, incomingStroke] };
@@ -95,7 +96,6 @@ export default function Whiteboard({
             return pg;
           });
 
-          // If target page doesn't exist yet, create it safely
           if (!next[targetPage]) {
             next[targetPage] = { id: targetPage + 1, strokes: [incomingStroke] };
           }
@@ -104,7 +104,21 @@ export default function Whiteboard({
       }
     });
 
-    // Undo Sync: Pops last stroke on targeted page
+    // Clean Page Sync: Wipes both teacher & student canvases simultaneously
+    registerListener('whiteboard:clear_page', (data) => {
+      if (data && data.pageIndex !== undefined) {
+        const targetPage = Number(data.pageIndex);
+        setPages((prevPages) => {
+          return prevPages.map((pg, idx) => {
+            if (idx === targetPage) return { ...pg, strokes: [] };
+            return pg;
+          });
+        });
+        setRedoStack([]);
+      }
+    });
+
+    // Undo Action Sync
     registerListener('whiteboard:undo_action', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -119,7 +133,7 @@ export default function Whiteboard({
       }
     });
 
-    // Magic Eraser Sync: Deletes stroke by unique ID
+    // Magic Eraser Sync
     registerListener('whiteboard:magic_erase_stroke', (data) => {
       if (data && data.strokeId) {
         const targetPage = Number(data.pageIndex ?? 0);
@@ -134,7 +148,7 @@ export default function Whiteboard({
       }
     });
 
-    // Page Switch Sync
+    // Page Sync
     registerListener('whiteboard:page_sync', (data) => {
       if (!isTeacher && data && data.pageIndex !== undefined) {
         setCurrentPageIndex(Number(data.pageIndex));
@@ -144,7 +158,7 @@ export default function Whiteboard({
       }
     });
 
-    // Zoom & Pan Sync (Follows educator when locked)
+    // Zoom & Pan Sync
     registerListener('whiteboard:zoom_sync', (data) => {
       if (!isTeacher && lockStudentView && data) {
         if (data.scale !== undefined) setScale(data.scale);
@@ -152,7 +166,7 @@ export default function Whiteboard({
       }
     });
 
-    // Remote Laser Pointer
+    // Laser Pointer Sync
     registerListener('whiteboard:laser_pointer', (data) => {
       if (data && data.senderRole !== currentUser?.role) {
         setRemotePointer(data);
@@ -163,7 +177,7 @@ export default function Whiteboard({
       }
     });
 
-    // Rejoin handshake
+    // Rejoin Handshake
     registerListener('room:request_state', () => {
       if (isTeacher && broadcast) {
         broadcast('whiteboard:full_sync', {
@@ -185,7 +199,7 @@ export default function Whiteboard({
     });
   }, [registerListener, currentUser, isTeacher, broadcast, pages, currentPageIndex, lockStudentView, scale, offset]);
 
-  // 2. CANVAS REDRAW (Crisp Grid + Transformed Strokes)
+  // 2. Infinite Canvas Redraw Engine (Unbounded Virtual Plane)
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -197,7 +211,7 @@ export default function Whiteboard({
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    // Grid Background
+    // Dynamic Infinite Grid Lines
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 1;
     const gridSize = 40 * scale;
@@ -217,7 +231,7 @@ export default function Whiteboard({
       ctx.stroke();
     }
 
-    // Zoom & Pan matrix
+    // World Transformation Matrix
     ctx.translate(offset.x, offset.y);
     ctx.scale(scale, scale);
 
@@ -226,7 +240,6 @@ export default function Whiteboard({
       drawSingleStroke(ctx, st, width, height);
     });
 
-    // Local ongoing drawing preview
     if (currentStrokeRef.current) {
       drawSingleStroke(ctx, currentStrokeRef.current, width, height);
     }
@@ -268,7 +281,7 @@ export default function Whiteboard({
       ctx.lineWidth = st.width * 3.5;
     } else if (st.tool === 'eraser') {
       ctx.strokeStyle = '#020617';
-      ctx.lineWidth = st.width * 5;
+      ctx.lineWidth = st.width;
     } else {
       ctx.globalAlpha = 1.0;
     }
@@ -316,7 +329,7 @@ export default function Whiteboard({
     ctx.restore();
   };
 
-  // 3. Transformation: Screen -> Virtual Normalized Coordinates
+  // 3. Transformation Helper: Screen space to Unbounded Virtual Coordinates
   const getCanvasPoint = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -327,12 +340,13 @@ export default function Whiteboard({
     const screenX = clientX - rect.left;
     const screenY = clientY - rect.top;
 
+    // True infinite mapping (allows coordinates outside 0..1 boundary)
     const virtualX = (screenX - offset.x) / scale;
     const virtualY = (screenY - offset.y) / scale;
 
     return {
-      x: Math.max(0, Math.min(1, virtualX / canvas.width)),
-      y: Math.max(0, Math.min(1, virtualY / canvas.height)),
+      x: virtualX / canvas.width,
+      y: virtualY / canvas.height,
       rawScreenX: screenX,
       rawScreenY: screenY
     };
@@ -389,9 +403,12 @@ export default function Whiteboard({
       try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
     }
 
+    setShowThicknessPopover(null);
+    setShowColorPicker(false);
+
     const pt = getCanvasPoint(e);
 
-    // Pan / Drag (ONLY if permitted by Educator lock)
+    // Pan / Drag Infinite Canvas
     if ((activeTool === 'pan' || e.button === 1) && canNavigate) {
       isPanningRef.current = true;
       startPanRef.current = { x: pt.rawScreenX - offset.x, y: pt.rawScreenY - offset.y };
@@ -412,11 +429,13 @@ export default function Whiteboard({
     if (!canDraw) return;
 
     isDrawingRef.current = true;
+    const currentWidth = activeTool === 'eraser' ? eraserThickness : penThickness;
+
     currentStrokeRef.current = {
       id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       tool: activeTool,
       color: activeColor,
-      width: strokeWidth,
+      width: currentWidth,
       points: [{ x: pt.x, y: pt.y }]
     };
 
@@ -479,7 +498,6 @@ export default function Whiteboard({
     currentStrokeRef.current = null;
 
     if (finalStroke && finalStroke.points.length > 0) {
-      // Safe Immutability Update: Preserves all existing teacher & student strokes
       setPages((prevPages) => {
         return prevPages.map((pg, idx) => {
           if (idx === currentPageIndex) {
@@ -491,7 +509,6 @@ export default function Whiteboard({
 
       setRedoStack([]);
 
-      // Broadcast single stroke to peer
       if (broadcast) {
         broadcast('whiteboard:stroke_drawn', {
           pageIndex: currentPageIndex,
@@ -504,10 +521,10 @@ export default function Whiteboard({
     redrawCanvas();
   };
 
-  // Zoom Helpers (Disabled if Student is locked)
+  // Zoom Helpers
   const handleZoom = (delta) => {
     if (!canNavigate) return;
-    const newScale = Math.max(0.4, Math.min(3.5, Number((scale + delta).toFixed(2))));
+    const newScale = Math.max(0.3, Math.min(4.0, Number((scale + delta).toFixed(2))));
     setScale(newScale);
     if (isTeacher && broadcast) {
       broadcast('whiteboard:zoom_sync', { scale: newScale, offset });
@@ -523,7 +540,7 @@ export default function Whiteboard({
     }
   };
 
-  // Undo (Synced for both Teacher & Student)
+  // Undo / Redo
   const handleUndo = () => {
     const curStrokes = pages[currentPageIndex]?.strokes || [];
     if (curStrokes.length === 0) return;
@@ -571,7 +588,7 @@ export default function Whiteboard({
     }
   };
 
-  // Page Controls
+  // Page Controls (Each page represents a 1-to-1 PDF Sheet)
   const handlePageChange = (newIdx) => {
     if (newIdx < 0 || newIdx >= pages.length) return;
     setCurrentPageIndex(newIdx);
@@ -609,6 +626,7 @@ export default function Whiteboard({
     });
   };
 
+  // Clean Page Sync (Fixed: Clears both teacher & student canvases)
   const handleClearBoard = () => {
     if (!window.confirm('Clear all strokes on this page?')) return;
     setPages((prev) => {
@@ -623,25 +641,42 @@ export default function Whiteboard({
     }
   };
 
-  // Global export hook
+  // Re-Click Handler for Pen & Eraser Thickness Popovers
+  const handleToolClick = (toolName) => {
+    if (activeTool === toolName) {
+      setShowThicknessPopover(showThicknessPopover === toolName ? null : toolName);
+    } else {
+      setActiveTool(toolName);
+      setShowThicknessPopover(null);
+    }
+  };
+
+  // Global Export Hook (Generates individual PDF page snapshots)
   useEffect(() => {
-    window.__exportWhiteboardAllPages = async () => pages;
+    window.__exportWhiteboardAllPages = async () => {
+      return pages.map((page, index) => ({
+        pageNumber: index + 1,
+        strokes: page.strokes,
+        scale,
+        offset
+      }));
+    };
     return () => { delete window.__exportWhiteboardAllPages; };
-  }, [pages]);
+  }, [pages, scale, offset]);
 
   return (
     <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none relative">
       
-      {/* 1. COMPACT TOOLBAR (Exact Locked UI) */}
+      {/* 1. COMPACT TOOLBAR */}
       <div className="h-10 bg-slate-900 border-b border-slate-800 px-1.5 flex items-center justify-between shrink-0 text-xs gap-1 z-30">
         
-        {/* Left: Page Navigation + Add + Delete */}
+        {/* Left: Page Navigation (Page 1 = PDF Page 1) */}
         <div className="flex items-center gap-0.5 shrink-0 font-mono text-xs">
           <button
             disabled={(!isTeacher && lockStudentView) || currentPageIndex === 0}
             onClick={() => handlePageChange(currentPageIndex - 1)}
             className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-            title="Previous Page"
+            title="Previous Page (PDF Sheet)"
           >
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
@@ -654,7 +689,7 @@ export default function Whiteboard({
             disabled={(!isTeacher && lockStudentView) || currentPageIndex === pages.length - 1}
             onClick={() => handlePageChange(currentPageIndex + 1)}
             className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-            title="Next Page"
+            title="Next Page (PDF Sheet)"
           >
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
@@ -664,7 +699,7 @@ export default function Whiteboard({
               <button
                 onClick={handleAddPage}
                 className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white ml-0.5 shadow-sm"
-                title="Add New Page"
+                title="Add New PDF Page Sheet"
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
@@ -682,42 +717,83 @@ export default function Whiteboard({
           )}
         </div>
 
-        {/* Center: Tools */}
-        <div className="flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-xl border border-slate-800 overflow-x-auto">
-          <button
-            onClick={() => setActiveTool('pen')}
-            className={`p-1.5 rounded-lg transition ${activeTool === 'pen' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            title="Pen"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
+        {/* Center: Tools (With Re-Click Stroke Thickness Sliders) */}
+        <div className="flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-xl border border-slate-800 overflow-visible relative">
+          
+          {/* Pen Button + Popover */}
+          <div className="relative">
+            <button
+              onClick={() => handleToolClick('pen')}
+              className={`p-1.5 rounded-lg transition relative ${activeTool === 'pen' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              title="Pen (Click again to adjust thickness)"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              {activeTool === 'pen' && (
+                <span className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-white" />
+              )}
+            </button>
+
+            {showThicknessPopover === 'pen' && (
+              <div className="absolute top-8 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-32">
+                <span className="text-[10px] text-slate-400 font-mono">Pen Width: {penThickness}px</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="16"
+                  value={penThickness}
+                  onChange={(e) => setPenThickness(Number(e.target.value))}
+                  className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+              </div>
+            )}
+          </div>
 
           <button
-            onClick={() => setActiveTool('highlighter')}
+            onClick={() => handleToolClick('highlighter')}
             className={`p-1.5 rounded-lg transition ${activeTool === 'highlighter' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             title="Highlighter"
           >
             <Highlighter className="w-3.5 h-3.5" />
           </button>
 
-          <button
-            onClick={() => setActiveTool('eraser')}
-            className={`p-1.5 rounded-lg transition ${activeTool === 'eraser' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-            title="Stroke Eraser"
-          >
-            <Eraser className="w-3.5 h-3.5" />
-          </button>
+          {/* Eraser Button + Popover */}
+          <div className="relative">
+            <button
+              onClick={() => handleToolClick('eraser')}
+              className={`p-1.5 rounded-lg transition relative ${activeTool === 'eraser' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              title="Eraser (Click again to adjust size)"
+            >
+              <Eraser className="w-3.5 h-3.5" />
+              {activeTool === 'eraser' && (
+                <span className="absolute bottom-0.5 right-0.5 w-1 h-1 rounded-full bg-white" />
+              )}
+            </button>
+
+            {showThicknessPopover === 'eraser' && (
+              <div className="absolute top-8 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-32">
+                <span className="text-[10px] text-slate-400 font-mono">Eraser Size: {eraserThickness}px</span>
+                <input
+                  type="range"
+                  min="8"
+                  max="60"
+                  value={eraserThickness}
+                  onChange={(e) => setEraserThickness(Number(e.target.value))}
+                  className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+              </div>
+            )}
+          </div>
 
           <button
-            onClick={() => setActiveTool('magic_eraser')}
+            onClick={() => { setActiveTool('magic_eraser'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition ${activeTool === 'magic_eraser' ? 'bg-amber-600 text-white shadow' : 'text-slate-400 hover:text-amber-400'}`}
-            title="Magic Eraser"
+            title="Magic Eraser (Tap any stroke to delete)"
           >
             <Sparkles className="w-3.5 h-3.5" />
           </button>
 
           <button
-            onClick={() => setActiveTool('rect')}
+            onClick={() => { setActiveTool('rect'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition ${activeTool === 'rect' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             title="Rectangle"
           >
@@ -725,7 +801,7 @@ export default function Whiteboard({
           </button>
 
           <button
-            onClick={() => setActiveTool('circle')}
+            onClick={() => { setActiveTool('circle'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition ${activeTool === 'circle' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             title="Circle"
           >
@@ -733,7 +809,7 @@ export default function Whiteboard({
           </button>
 
           <button
-            onClick={() => setActiveTool('arrow')}
+            onClick={() => { setActiveTool('arrow'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition ${activeTool === 'arrow' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             title="Arrow"
           >
@@ -741,19 +817,19 @@ export default function Whiteboard({
           </button>
 
           <button
-            onClick={() => setActiveTool('laser')}
+            onClick={() => { setActiveTool('laser'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition ${activeTool === 'laser' ? 'bg-rose-600 text-white shadow animate-pulse' : 'text-slate-400 hover:text-rose-400'}`}
             title="Laser Pointer"
           >
             <MousePointer className="w-3.5 h-3.5" />
           </button>
 
-          {/* Hand Pan Tool (Disabled if Screen Follow Locked for student) */}
+          {/* Infinite Pan Tool */}
           <button
             disabled={!canNavigate}
-            onClick={() => setActiveTool('pan')}
+            onClick={() => { setActiveTool('pan'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition disabled:opacity-20 ${activeTool === 'pan' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-emerald-400'}`}
-            title={canNavigate ? 'Pan / Move Canvas' : 'Pan Locked by Educator'}
+            title={canNavigate ? 'Pan / Move Infinite Canvas' : 'Pan Locked by Educator'}
           >
             <Move className="w-3.5 h-3.5" />
           </button>
@@ -785,7 +861,7 @@ export default function Whiteboard({
             )}
           </div>
 
-          {/* Desktop Zoom In / Zoom Out (Locked if Student is locked) */}
+          {/* Desktop Zoom In / Zoom Out */}
           <div className="hidden sm:flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
             <button disabled={!canNavigate} onClick={() => handleZoom(-0.15)} className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20" title="Zoom Out">
               <ZoomOut className="w-3 h-3" />
@@ -879,7 +955,7 @@ export default function Whiteboard({
           </div>
         )}
 
-        {/* Mobile Floating Zoom Bar (Disabled when Teacher locks screen) */}
+        {/* Mobile Floating Zoom Bar */}
         {canNavigate && (
           <div className="sm:hidden absolute bottom-2 left-2 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1 rounded-xl shadow-xl z-20">
             <button onClick={() => handleZoom(-0.2)} className="p-1 text-slate-300 hover:text-white">
