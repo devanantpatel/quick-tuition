@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Pencil, Highlighter, Eraser, Sparkles, Square, Circle, ArrowRight,
   Undo2, Redo2, Trash2, ChevronLeft, ChevronRight, Plus, Minus,
-  MousePointer, Move, ZoomIn, ZoomOut, RotateCcw, Check, Save,
-  Layers, ChevronUp, ChevronDown
+  MousePointer, Move, ZoomIn, ZoomOut, RotateCcw, Save,
+  Layers, ChevronUp, ChevronDown, Palette
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
-const COLORS = [
+const PRESET_COLORS = [
   '#ffffff', // White
   '#f87171', // Red
   '#fbbf24', // Yellow
@@ -27,7 +27,6 @@ export default function Whiteboard({
   const { activeSession, currentUser } = useApp();
   const roomId = activeSession?.id ? `board_cache_${activeSession.id}` : 'board_cache_default';
 
-  // Multi-Page Management (Page 1 = PDF Sheet 1, Page 2 = PDF Sheet 2)
   const [pages, setPages] = useState(() => {
     try {
       const saved = localStorage.getItem(`${roomId}_pages`);
@@ -41,21 +40,22 @@ export default function Whiteboard({
   const [redoStack, setRedoStack] = useState([]);
 
   // Save Status Tracker
-  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving'
-  const [lastSavedTime, setLastSavedTime] = useState(Date.now());
+  const [saveStatus, setSaveStatus] = useState('saved');
   const [isPageStripOpen, setIsPageStripOpen] = useState(false);
 
   // Tools: 'pen' | 'highlighter' | 'eraser' | 'magic_eraser' | 'rect' | 'circle' | 'arrow' | 'laser' | 'pan'
   const [activeTool, setActiveTool] = useState('pen');
   const [activeColor, setActiveColor] = useState('#ffffff');
-  const [showColorPicker, setShowColorPicker] = useState(false);
 
-  // Dynamic Thickness Popovers (Re-click to open thickness slider)
+  // Thickness
   const [penThickness, setPenThickness] = useState(3);
   const [eraserThickness, setEraserThickness] = useState(25);
   const [showThicknessPopover, setShowThicknessPopover] = useState(null);
 
-  // Infinite Workspace Coordinates & Zoom
+  // Hidden native color picker input reference
+  const colorInputRef = useRef(null);
+
+  // Infinite Canvas Matrix
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const isPanningRef = useRef(false);
@@ -81,7 +81,6 @@ export default function Whiteboard({
       localStorage.setItem(`${roomId}_pages`, JSON.stringify(pages));
       const t = setTimeout(() => {
         setSaveStatus('saved');
-        setLastSavedTime(Date.now());
       }, 300);
       return () => clearTimeout(t);
     } catch (e) {
@@ -95,12 +94,11 @@ export default function Whiteboard({
       localStorage.setItem(`${roomId}_pages`, JSON.stringify(pages));
       setTimeout(() => {
         setSaveStatus('saved');
-        setLastSavedTime(Date.now());
       }, 200);
     } catch (e) {}
   };
 
-  // 1. Realtime Sync Handlers
+  // Realtime Listeners
   useEffect(() => {
     if (!registerListener) return;
 
@@ -216,7 +214,7 @@ export default function Whiteboard({
     });
   }, [registerListener, currentUser, isTeacher, broadcast, pages, currentPageIndex, lockStudentView, scale, offset]);
 
-  // 2. Infinite Canvas Redraw Engine
+  // Infinite Canvas Redraw Engine
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -287,16 +285,16 @@ export default function Whiteboard({
   const drawSingleStroke = (ctx, st, w, h) => {
     ctx.save();
     ctx.strokeStyle = st.color;
-    ctx.lineWidth = st.width;
+    ctx.lineWidth = st.width || 3;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     if (st.tool === 'highlighter') {
       ctx.globalAlpha = 0.35;
-      ctx.lineWidth = st.width * 3.5;
+      ctx.lineWidth = (st.width || 3) * 3.5;
     } else if (st.tool === 'eraser') {
       ctx.strokeStyle = '#020617';
-      ctx.lineWidth = st.width;
+      ctx.lineWidth = st.width || 25;
     } else {
       ctx.globalAlpha = 1.0;
     }
@@ -414,7 +412,6 @@ export default function Whiteboard({
     }
 
     setShowThicknessPopover(null);
-    setShowColorPicker(false);
 
     const pt = getCanvasPoint(e);
 
@@ -438,7 +435,7 @@ export default function Whiteboard({
     if (!canDraw) return;
 
     isDrawingRef.current = true;
-    const currentWidth = activeTool === 'eraser' ? eraserThickness : penThickness;
+    const currentWidth = activeTool === 'eraser' ? Number(eraserThickness) : Number(penThickness);
 
     currentStrokeRef.current = {
       id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -670,64 +667,153 @@ export default function Whiteboard({
   return (
     <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none relative">
       
-      {/* 1. EXACT LOCKED COMPACT TOOLBAR (Unchanged Layout) */}
-      <div className="h-10 bg-slate-900 border-b border-slate-800 px-1.5 flex items-center justify-between shrink-0 text-xs gap-1 z-30">
+      {/* 2-ROW TOOLBAR */}
+      <div className="bg-slate-900 border-b border-slate-800 px-2 py-1 flex flex-col gap-1 shrink-0 z-30">
         
-        {/* Left: Page Navigation */}
-        <div className="flex items-center gap-0.5 shrink-0 font-mono text-xs">
-          <button
-            disabled={(!isTeacher && lockStudentView) || currentPageIndex === 0}
-            onClick={() => handlePageChange(currentPageIndex - 1)}
-            className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-            title="Previous Page (PDF Sheet)"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
+        {/* ROW 1: Page Navigation, Smooth Scrollable Color Palette, Undo, Redo, Clear */}
+        <div className="flex items-center justify-between w-full text-xs gap-1">
+          
+          {/* Page Navigation */}
+          <div className="flex items-center gap-0.5 shrink-0 font-mono text-xs">
+            <button
+              disabled={(!isTeacher && lockStudentView) || currentPageIndex === 0}
+              onClick={() => handlePageChange(currentPageIndex - 1)}
+              className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
+              title="Previous Page"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
 
-          <span className="text-slate-200 px-1 font-bold text-[11px] whitespace-nowrap">
-            {currentPageIndex + 1} / {pages.length}
-          </span>
+            <span className="text-slate-200 px-1 font-bold text-[11px] whitespace-nowrap">
+              {currentPageIndex + 1} / {pages.length}
+            </span>
 
-          <button
-            disabled={(!isTeacher && lockStudentView) || currentPageIndex === pages.length - 1}
-            onClick={() => handlePageChange(currentPageIndex + 1)}
-            className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-            title="Next Page (PDF Sheet)"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
+            <button
+              disabled={(!isTeacher && lockStudentView) || currentPageIndex === pages.length - 1}
+              onClick={() => handlePageChange(currentPageIndex + 1)}
+              className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
+              title="Next Page"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
 
-          {isTeacher && (
-            <>
+            {isTeacher && (
+              <>
+                <button
+                  onClick={handleAddPage}
+                  className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white ml-0.5 shadow-sm"
+                  title="Add Page"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+
+                {pages.length > 1 && (
+                  <button
+                    onClick={handleDeletePage}
+                    className="p-1 rounded bg-rose-950/40 border border-rose-500/40 text-rose-400 hover:text-white hover:bg-rose-600 ml-0.5"
+                    title="Remove Current Page"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Right side: SCROLLABLE COLOR STRIP + Undo / Redo / Clear */}
+          <div className="flex items-center gap-1 shrink min-w-0 justify-end overflow-hidden">
+            
+            {/* Color Strip with Smooth Horizontal Scroll & Touch Support */}
+            <div 
+              className="flex items-center gap-1.5 bg-slate-950 px-1.5 py-0.5 rounded-lg border border-slate-800 shadow-inner overflow-x-auto shrink min-w-0 max-w-[130px] sm:max-w-none"
+              style={{
+                touchAction: 'pan-x',
+                scrollbarWidth: 'thin',
+                scrollbarColor: '#475569 transparent'
+              }}
+            >
+              {PRESET_COLORS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setActiveColor(c)}
+                  className={`w-3.5 h-3.5 rounded-full border transition transform shrink-0 ${
+                    activeColor.toLowerCase() === c.toLowerCase()
+                      ? 'border-white scale-125 shadow-[0_0_8px_rgba(255,255,255,0.6)] z-10'
+                      : 'border-transparent opacity-75 hover:opacity-100 hover:scale-110'
+                  }`}
+                  style={{ backgroundColor: c }}
+                  title={`Select ${c}`}
+                />
+              ))}
+
+              {/* Custom Color Chooser Button */}
+              <div className="relative flex items-center shrink-0">
+                <button
+                  onClick={() => colorInputRef.current?.click()}
+                  className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition shadow-sm shrink-0 ${
+                    !PRESET_COLORS.includes(activeColor)
+                      ? 'border-white scale-125 shadow-[0_0_8px_rgba(99,102,241,0.8)]'
+                      : 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                  style={{
+                    backgroundColor: !PRESET_COLORS.includes(activeColor) ? activeColor : undefined
+                  }}
+                  title="Choose Custom Color"
+                >
+                  <Palette className="w-2 h-2" />
+                </button>
+                
+                <input
+                  ref={colorInputRef}
+                  type="color"
+                  value={activeColor}
+                  onChange={(e) => setActiveColor(e.target.value)}
+                  className="absolute opacity-0 pointer-events-none w-0 h-0"
+                />
+              </div>
+            </div>
+
+            {/* Actions: Undo / Redo / Clear (Always Visible) */}
+            <div className="flex items-center gap-0.5 shrink-0">
               <button
-                onClick={handleAddPage}
-                className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white ml-0.5 shadow-sm"
-                title="Add New PDF Page Sheet"
+                onClick={handleUndo}
+                disabled={!canDraw || (pages[currentPageIndex]?.strokes || []).length === 0}
+                className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
+                title="Undo"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Undo2 className="w-3.5 h-3.5" />
               </button>
 
-              {pages.length > 1 && (
-                <button
-                  onClick={handleDeletePage}
-                  className="p-1 rounded bg-rose-950/40 border border-rose-500/40 text-rose-400 hover:text-white hover:bg-rose-600 ml-0.5"
-                  title="Remove Current Page"
-                >
-                  <Minus className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </>
-          )}
+              <button
+                onClick={handleRedo}
+                disabled={!canDraw || redoStack.length === 0}
+                className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
+                title="Redo"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={handleClearBoard}
+                disabled={!canDraw}
+                className="p-1 rounded bg-rose-950/40 border border-rose-500/30 text-rose-400 hover:text-white hover:bg-rose-600"
+                title="Clear Canvas"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Center: Tools */}
-        <div className="flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-xl border border-slate-800 overflow-visible relative">
+        {/* ROW 2: All Drawing Tools */}
+        <div className="flex items-center justify-between bg-slate-950 px-1 py-0.5 rounded-xl border border-slate-800 relative w-full overflow-visible">
           
+          {/* Pen Tool + Thickness Slider */}
           <div className="relative">
             <button
               onClick={() => handleToolClick('pen')}
               className={`p-1.5 rounded-lg transition relative ${activeTool === 'pen' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-              title="Pen (Click again to adjust thickness)"
+              title="Pen (Click again for thickness)"
             >
               <Pencil className="w-3.5 h-3.5" />
               {activeTool === 'pen' && (
@@ -736,15 +822,15 @@ export default function Whiteboard({
             </button>
 
             {showThicknessPopover === 'pen' && (
-              <div className="absolute top-8 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-32">
-                <span className="text-[10px] text-slate-400 font-mono">Pen Width: {penThickness}px</span>
+              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-36">
+                <span className="text-[10px] text-slate-300 font-mono">Pen Width: {penThickness}px</span>
                 <input
                   type="range"
                   min="1"
-                  max="16"
+                  max="20"
                   value={penThickness}
                   onChange={(e) => setPenThickness(Number(e.target.value))}
-                  className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                 />
               </div>
             )}
@@ -758,11 +844,12 @@ export default function Whiteboard({
             <Highlighter className="w-3.5 h-3.5" />
           </button>
 
+          {/* Eraser Tool + Thickness Slider */}
           <div className="relative">
             <button
               onClick={() => handleToolClick('eraser')}
               className={`p-1.5 rounded-lg transition relative ${activeTool === 'eraser' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-              title="Eraser (Click again to adjust size)"
+              title="Eraser (Click again for size)"
             >
               <Eraser className="w-3.5 h-3.5" />
               {activeTool === 'eraser' && (
@@ -771,15 +858,15 @@ export default function Whiteboard({
             </button>
 
             {showThicknessPopover === 'eraser' && (
-              <div className="absolute top-8 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-32">
-                <span className="text-[10px] text-slate-400 font-mono">Eraser Size: {eraserThickness}px</span>
+              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-36">
+                <span className="text-[10px] text-slate-300 font-mono">Eraser Size: {eraserThickness}px</span>
                 <input
                   type="range"
                   min="8"
-                  max="60"
+                  max="80"
                   value={eraserThickness}
                   onChange={(e) => setEraserThickness(Number(e.target.value))}
-                  className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                 />
               </div>
             )}
@@ -829,84 +916,15 @@ export default function Whiteboard({
             disabled={!canNavigate}
             onClick={() => { setActiveTool('pan'); setShowThicknessPopover(null); }}
             className={`p-1.5 rounded-lg transition disabled:opacity-20 ${activeTool === 'pan' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-emerald-400'}`}
-            title={canNavigate ? 'Pan / Move Infinite Canvas' : 'Pan Locked by Educator'}
+            title={canNavigate ? 'Pan / Move Infinite Canvas' : 'Locked by Educator'}
           >
             <Move className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Right: Colors, Desktop Zoom & Undo/Redo */}
-        <div className="flex items-center gap-1 shrink-0 relative">
-          
-          <div className="relative">
-            <button
-              onClick={() => setShowColorPicker(!showColorPicker)}
-              className="w-5 h-5 rounded-full border-2 border-slate-700 shadow flex items-center justify-center p-0.5"
-              style={{ backgroundColor: activeColor }}
-              title="Pick Color"
-            />
-
-            {showColorPicker && (
-              <div className="absolute right-0 top-7 bg-slate-900 border border-slate-800 p-1.5 rounded-xl flex items-center gap-1.5 shadow-2xl z-50">
-                {COLORS.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => { setActiveColor(c); setShowColorPicker(false); }}
-                    className={`w-4 h-4 rounded-full border transition ${activeColor === c ? 'border-white scale-125 shadow' : 'border-transparent opacity-75'}`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="hidden sm:flex items-center gap-0.5 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
-            <button disabled={!canNavigate} onClick={() => handleZoom(-0.15)} className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20" title="Zoom Out">
-              <ZoomOut className="w-3 h-3" />
-            </button>
-            <span className="text-[9px] font-mono text-slate-300 px-1">{Math.round(scale * 100)}%</span>
-            <button disabled={!canNavigate} onClick={() => handleZoom(0.15)} className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20" title="Zoom In">
-              <ZoomIn className="w-3 h-3" />
-            </button>
-            <button disabled={!canNavigate} onClick={handleResetZoom} className="p-0.5 text-slate-400 hover:text-white disabled:opacity-20" title="Reset View">
-              <RotateCcw className="w-2.5 h-2.5" />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-0.5">
-            <button
-              onClick={handleUndo}
-              disabled={!canDraw || (pages[currentPageIndex]?.strokes || []).length === 0}
-              className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-              title="Undo"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={handleRedo}
-              disabled={!canDraw || redoStack.length === 0}
-              className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white disabled:opacity-20"
-              title="Redo"
-            >
-              <Redo2 className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={handleClearBoard}
-              disabled={!canDraw}
-              className="p-1 rounded bg-rose-950/40 border border-rose-500/30 text-rose-400 hover:text-white hover:bg-rose-600"
-              title="Clear Canvas"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-        </div>
-
       </div>
 
-      {/* 2. INFINITE WORKSPACE CANVAS */}
+      {/* INFINITE CANVAS WORKSPACE */}
       <div 
         ref={containerRef}
         className="flex-1 w-full h-full relative overflow-hidden bg-[#020617] touch-none select-none"
@@ -952,26 +970,25 @@ export default function Whiteboard({
           </div>
         )}
 
-        {/* Mobile Floating Zoom Bar */}
+        {/* ZOOM CONTROLS PLACED EXACTLY IN LEFT-BOTTOM */}
         {canNavigate && (
-          <div className="sm:hidden absolute bottom-3 left-3 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1 rounded-xl shadow-xl z-20">
-            <button onClick={() => handleZoom(-0.2)} className="p-1 text-slate-300 hover:text-white">
+          <div className="absolute bottom-3 left-3 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1.5 rounded-xl shadow-xl z-20">
+            <button onClick={() => handleZoom(-0.2)} className="p-1 text-slate-300 hover:text-white" title="Zoom Out">
               <ZoomOut className="w-3.5 h-3.5" />
             </button>
-            <span className="text-[10px] font-mono text-slate-400 px-0.5">{Math.round(scale * 100)}%</span>
-            <button onClick={() => handleZoom(0.2)} className="p-1 text-slate-300 hover:text-white">
+            <span className="text-[10px] font-mono text-slate-300 px-1 font-bold">{Math.round(scale * 100)}%</span>
+            <button onClick={() => handleZoom(0.2)} className="p-1 text-slate-300 hover:text-white" title="Zoom In">
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleResetZoom} className="p-1 text-slate-400 hover:text-white">
+            <button onClick={handleResetZoom} className="p-1 text-slate-400 hover:text-white ml-0.5" title="Reset Zoom">
               <RotateCcw className="w-3 h-3" />
             </button>
           </div>
         )}
 
-        {/* FLOATING PAGE SAVE STATUS & QUICK SLIDER BAR */}
+        {/* FLOATING PAGE SAVE STATUS & QUICK SLIDER BAR (Bottom Right) */}
         <div className="absolute bottom-3 right-3 z-30 flex flex-col items-end gap-1.5 pointer-events-auto">
           
-          {/* Expanded Page Slider Strip */}
           {isPageStripOpen && (
             <div className="bg-slate-900/95 backdrop-blur border border-slate-800 p-2 rounded-2xl shadow-2xl flex flex-col gap-2 max-w-[280px] sm:max-w-sm animate-in fade-in slide-in-from-bottom-2">
               <div className="flex items-center justify-between gap-3 text-xs">
@@ -989,7 +1006,6 @@ export default function Whiteboard({
                 </button>
               </div>
 
-              {/* Range Slider for Quick Jump */}
               <input
                 type="range"
                 min="0"
@@ -1000,7 +1016,6 @@ export default function Whiteboard({
                 className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
               />
 
-              {/* Mini Page Pills */}
               <div className="flex items-center gap-1 overflow-x-auto py-1 scrollbar-none">
                 {pages.map((p, idx) => (
                   <button
@@ -1020,7 +1035,6 @@ export default function Whiteboard({
             </div>
           )}
 
-          {/* Compact Status Pill with Toggle */}
           <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded-full shadow-lg text-[10px] font-mono text-slate-300">
             <span className={`w-2 h-2 rounded-full ${saveStatus === 'saved' ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-amber-400 animate-ping'}`} />
             <span className="hidden sm:inline">
