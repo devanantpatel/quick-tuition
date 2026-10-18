@@ -70,6 +70,7 @@ export default function Whiteboard({
   const isDrawingRef = useRef(false);
   const currentStrokeRef = useRef(null);
   const lastPointerBroadcastRef = useRef(0);
+  const actionTimeoutRef = useRef(null);
 
   const canDraw = isTeacher || Boolean(isStudentAllowed);
   const canNavigate = isTeacher || !Boolean(lockStudentView);
@@ -97,6 +98,27 @@ export default function Whiteboard({
       }, 200);
     } catch (e) {}
   };
+
+  // Broadcast Real-time Header Status
+  const emitHeaderAction = useCallback((actionType, tool = null) => {
+    if (!broadcast) return;
+    broadcast('peer:action_update', {
+      senderRole: currentUser?.role || (isTeacher ? 'teacher' : 'student'),
+      action: actionType,
+      tool: tool || activeTool,
+      page: currentPageIndex + 1,
+      tab: 'whiteboard'
+    });
+
+    if (actionTimeoutRef.current) clearTimeout(actionTimeoutRef.current);
+    actionTimeoutRef.current = setTimeout(() => {
+      broadcast('peer:action_update', {
+        senderRole: currentUser?.role || (isTeacher ? 'teacher' : 'student'),
+        action: 'idle',
+        tab: 'whiteboard'
+      });
+    }, 2500);
+  }, [broadcast, currentUser?.role, isTeacher, activeTool, currentPageIndex]);
 
   // Realtime Listeners
   useEffect(() => {
@@ -397,6 +419,8 @@ export default function Whiteboard({
         });
       });
 
+      emitHeaderAction('erasing');
+
       if (broadcast) {
         broadcast('whiteboard:magic_erase_stroke', {
           pageIndex: currentPageIndex,
@@ -444,6 +468,12 @@ export default function Whiteboard({
       width: currentWidth,
       points: [{ x: pt.x, y: pt.y }]
     };
+
+    if (activeTool === 'eraser') {
+      emitHeaderAction('erasing');
+    } else {
+      emitHeaderAction('drawing', activeTool);
+    }
 
     redrawCanvas();
   };
@@ -597,6 +627,8 @@ export default function Whiteboard({
     setCurrentPageIndex(newIdx);
     setRedoStack([]);
 
+    emitHeaderAction('page_change');
+
     if (isTeacher && broadcast) {
       broadcast('whiteboard:page_sync', { pageIndex: newIdx });
     }
@@ -607,6 +639,7 @@ export default function Whiteboard({
       const updated = [...prev, { id: prev.length + 1, strokes: [] }];
       const nextIdx = prev.length;
       setCurrentPageIndex(nextIdx);
+      emitHeaderAction('page_change');
       if (isTeacher && broadcast) {
         broadcast('whiteboard:page_sync', { pageIndex: nextIdx, pages: updated });
       }
@@ -622,6 +655,7 @@ export default function Whiteboard({
       const updated = prev.filter((_, i) => i !== currentPageIndex);
       const nextIdx = Math.max(0, currentPageIndex - 1);
       setCurrentPageIndex(nextIdx);
+      emitHeaderAction('page_change');
       if (isTeacher && broadcast) {
         broadcast('whiteboard:page_sync', { pageIndex: nextIdx, pages: updated });
       }
@@ -638,6 +672,7 @@ export default function Whiteboard({
       });
     });
     setRedoStack([]);
+    emitHeaderAction('cleared_board');
     if (broadcast) {
       broadcast('whiteboard:clear_page', { pageIndex: currentPageIndex });
     }
@@ -668,9 +703,9 @@ export default function Whiteboard({
     <div className="flex flex-col h-full w-full bg-[#020617] overflow-hidden select-none relative">
       
       {/* 2-ROW TOOLBAR */}
-      <div className="bg-slate-900 border-b border-slate-800 px-2 py-1 flex flex-col gap-1 shrink-0 z-30">
+      <div className="bg-slate-900 border-b border-slate-800 px-2 py-1 flex flex-col gap-1 shrink-0 z-20">
         
-        {/* ROW 1: Page Navigation, Smooth Scrollable Color Palette, Undo, Redo, Clear */}
+        {/* ROW 1: Page Navigation, Color Palette, Undo, Redo, Clear */}
         <div className="flex items-center justify-between w-full text-xs gap-1">
           
           {/* Page Navigation */}
@@ -723,7 +758,6 @@ export default function Whiteboard({
           {/* Right side: SCROLLABLE COLOR STRIP + Undo / Redo / Clear */}
           <div className="flex items-center gap-1 shrink min-w-0 justify-end overflow-hidden">
             
-            {/* Color Strip with Smooth Horizontal Scroll & Touch Support */}
             <div 
               className="flex items-center gap-1.5 bg-slate-950 px-1.5 py-0.5 rounded-lg border border-slate-800 shadow-inner overflow-x-auto shrink min-w-0 max-w-[130px] sm:max-w-none"
               style={{
@@ -773,7 +807,7 @@ export default function Whiteboard({
               </div>
             </div>
 
-            {/* Actions: Undo / Redo / Clear (Always Visible) */}
+            {/* Actions: Undo / Redo / Clear */}
             <div className="flex items-center gap-0.5 shrink-0">
               <button
                 onClick={handleUndo}
@@ -822,7 +856,7 @@ export default function Whiteboard({
             </button>
 
             {showThicknessPopover === 'pen' && (
-              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-36">
+              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-40 flex flex-col gap-1 w-36">
                 <span className="text-[10px] text-slate-300 font-mono">Pen Width: {penThickness}px</span>
                 <input
                   type="range"
@@ -858,7 +892,7 @@ export default function Whiteboard({
             </button>
 
             {showThicknessPopover === 'eraser' && (
-              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-50 flex flex-col gap-1 w-36">
+              <div className="absolute top-9 left-0 bg-slate-900 border border-slate-700 p-2 rounded-xl shadow-2xl z-40 flex flex-col gap-1 w-36">
                 <span className="text-[10px] text-slate-300 font-mono">Eraser Size: {eraserThickness}px</span>
                 <input
                   type="range"
@@ -950,10 +984,10 @@ export default function Whiteboard({
           style={{ touchAction: 'none' }}
         />
 
-        {/* Remote Laser Pointer with Sender Name Badge */}
+        {/* Remote Laser Pointer with Sender Name Badge (Fixed Coordinate Calculation) */}
         {remotePointer && (
           <div
-            className="absolute z-50 pointer-events-none transition-all duration-75 flex items-center gap-1.5"
+            className="absolute z-30 pointer-events-none transition-all duration-75 flex items-center gap-1.5"
             style={{
               left: `${(remotePointer.nx * (canvasRef.current?.width || 0) * scale + offset.x)}px`,
               top: `${(remotePointer.ny * (canvasRef.current?.height || 0) * scale + offset.y)}px`,
@@ -970,7 +1004,7 @@ export default function Whiteboard({
           </div>
         )}
 
-        {/* ZOOM CONTROLS PLACED EXACTLY IN LEFT-BOTTOM */}
+        {/* ZOOM CONTROLS PLACED IN LEFT-BOTTOM */}
         {canNavigate && (
           <div className="absolute bottom-3 left-3 flex items-center gap-1 bg-slate-900/90 border border-slate-800 p-1.5 rounded-xl shadow-xl z-20">
             <button onClick={() => handleZoom(-0.2)} className="p-1 text-slate-300 hover:text-white" title="Zoom Out">
@@ -987,7 +1021,7 @@ export default function Whiteboard({
         )}
 
         {/* FLOATING PAGE SAVE STATUS & QUICK SLIDER BAR (Bottom Right) */}
-        <div className="absolute bottom-3 right-3 z-30 flex flex-col items-end gap-1.5 pointer-events-auto">
+        <div className="absolute bottom-3 right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-auto">
           
           {isPageStripOpen && (
             <div className="bg-slate-900/95 backdrop-blur border border-slate-800 p-2 rounded-2xl shadow-2xl flex flex-col gap-2 max-w-[280px] sm:max-w-sm animate-in fade-in slide-in-from-bottom-2">

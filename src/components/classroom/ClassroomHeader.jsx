@@ -1,37 +1,46 @@
-import React, { useState, useEffect } from 'react';
-import { Clock, ShieldCheck, LogOut, IndianRupee, AlertCircle, PauseCircle, CheckCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { 
+  Clock, ShieldCheck, LogOut, IndianRupee, PauseCircle, PlayCircle, 
+  StopCircle, FileText, User, GraduationCap, RefreshCw, AlertCircle
+} from 'lucide-react';
 
 export default function ClassroomHeader({ 
-  subjectTitle, 
+  subjectTitle = 'Mathematics',
+  topicTitle = 'Class Session',
   ratePerMin = 5, 
   onEndSession,
   onLeaveOnly,
+  onStartSession,
+  sessionStatus = 'idle',
+  elapsedSeconds = 0,
+  studentStopRequested = false,
+  onRequestStopSession,
   peersInRoom = [],
-  currentUserRole = 'student'
+  currentUserRole = 'student',
+  currentUserName = 'User',
+  peerUserName,
+  peerActionState = null,
+  isPeerInAnotherRoom = false,
+  onOpenReceiptModal
 }) {
-  const [secondsElapsed, setSecondsElapsed] = useState(0);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
-  const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [refreshFlashMessage, setRefreshFlashMessage] = useState(null);
 
   const isTeacher = currentUserRole === 'teacher';
   const otherRole = isTeacher ? 'student' : 'teacher';
-  const isPeerOnline = peersInRoom.some((p) => p.role === otherRole);
+  
+  // Real Peer Name Resolution
+  const matchedPeer = (peersInRoom || []).find((p) => p && p.role === otherRole);
+  const activePeerName = matchedPeer?.name || peerUserName || (isTeacher ? 'Student' : 'Teacher');
+
+  const isPeerOnline = (peersInRoom || []).some((p) => p && p.role === otherRole);
   const isBothConnected = isPeerOnline;
 
-  useEffect(() => {
-    let timer = null;
-    if (isBothConnected) {
-      timer = setInterval(() => {
-        setSecondsElapsed((prev) => prev + 1);
-      }, 1000);
-    }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [isBothConnected]);
-
-  const freeSeconds = 10 * 60;
-  const isFreeTrial = secondsElapsed < freeSeconds;
+  // 5 Minutes Free Trial
+  const freeSeconds = 5 * 60;
+  const isFreeTrial = elapsedSeconds < freeSeconds;
+  const remainingFreeSeconds = Math.max(0, freeSeconds - elapsedSeconds);
 
   const formatTime = (totalSec) => {
     const m = Math.floor(totalSec / 60);
@@ -39,149 +48,299 @@ export default function ClassroomHeader({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const billableMinutes = isFreeTrial ? 0 : Math.ceil((secondsElapsed - freeSeconds) / 60);
+  const billableMinutes = isFreeTrial ? 0 : Math.ceil((elapsedSeconds - freeSeconds) / 60);
   const currentCost = billableMinutes * ratePerMin;
 
+  // Real-time Action Message: Teacher "teaching", Student "learning"
+  const getRealTimeStatusMessage = () => {
+    if (isPeerInAnotherRoom) return `${activePeerName} is in another session`;
+    
+    if (!isPeerOnline) {
+      return `${activePeerName} disconnected (Timer Paused)`;
+    }
+
+    if (sessionStatus === 'paused') {
+      return `Session Paused (Reconnecting...)`;
+    }
+
+    if (peerActionState?.action === 'typing' || peerActionState?.isTyping) {
+      return `${activePeerName} is typing in chat...`;
+    }
+    if (peerActionState?.action === 'drawing' || peerActionState?.action === 'writing') {
+      const toolUsed = peerActionState?.tool ? peerActionState.tool.toUpperCase() : 'PEN';
+      return `${activePeerName} is writing (${toolUsed})`;
+    }
+    if (peerActionState?.action === 'erasing') {
+      return `${activePeerName} is using eraser`;
+    }
+    if (peerActionState?.action === 'cleared_board') {
+      return `${activePeerName} cleared the board`;
+    }
+    if (peerActionState?.action === 'page_change') {
+      return `${activePeerName} turned to Page ${peerActionState.page || 1}`;
+    }
+
+    if (sessionStatus === 'active') {
+      // Teacher teaches, student learns
+      return isTeacher 
+        ? `${activePeerName} is actively learning` 
+        : `${activePeerName} is actively teaching`;
+    }
+
+    return `${activePeerName} is in room (Ready)`;
+  };
+
+  const currentDisplayStatus = getRealTimeStatusMessage();
+
+  const handleRefreshClick = () => {
+    const verifiedLocation = isPeerOnline ? currentDisplayStatus : `${activePeerName} offline`;
+    setRefreshFlashMessage(verifiedLocation);
+    setTimeout(() => setRefreshFlashMessage(null), 2500);
+  };
+
+  const handleStopClassSubmit = () => {
+    setShowStopConfirm(false);
+    if (onEndSession) {
+      onEndSession(elapsedSeconds, currentCost);
+    }
+  };
+
+  const isPaused = sessionStatus === 'paused' || (sessionStatus === 'active' && !isBothConnected);
+
   return (
-    <header className="bg-slate-900 border-b border-slate-800 px-4 md:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0 select-none">
-      
-      {/* 1. Left: Subject & Peer Status */}
-      <div className="flex items-center gap-3 min-w-0">
-        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPeerOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
-        <div className="min-w-0">
-          <h2 className="font-bold text-white text-xs md:text-sm leading-tight truncate">
-            {subjectTitle || '1-on-1 Mentorship Classroom'}
-          </h2>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className={`text-[10px] font-mono px-2 py-0.2 rounded-full border ${
-              isPeerOnline 
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-            }`}>
-              {isPeerOnline 
-                ? `${otherRole === 'teacher' ? 'Educator' : 'Student'} Connected` 
-                : `${otherRole === 'teacher' ? 'Educator' : 'Student'} Left (Waiting...)`}
+    <>
+      <header className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex flex-col md:flex-row items-center justify-between gap-2 shrink-0 select-none w-full z-30">
+        
+        {/* SECTION 1: SUBJECT & PEER STATUS */}
+        <div className="flex items-center justify-between md:justify-start gap-2.5 w-full md:w-auto min-w-0">
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${
+                isPeerOnline ? (isPaused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse') : 'bg-rose-500'
+              }`} />
+              <h1 className="font-extrabold text-white text-xs sm:text-sm leading-tight truncate tracking-wide">
+                {subjectTitle}
+              </h1>
+            </div>
+            <span className="text-[10px] font-medium text-slate-400 truncate pl-3.5">
+              {topicTitle}
             </span>
           </div>
-        </div>
-      </div>
 
-      {/* 2. Center: Two-Way Presence Timer */}
-      <div className="flex items-center gap-2.5 bg-slate-950 border border-slate-800 px-3.5 py-1.5 rounded-xl font-mono text-xs shadow-inner">
-        <div className="flex items-center gap-1.5 text-slate-200">
-          <Clock className={`w-3.5 h-3.5 ${isBothConnected ? 'text-indigo-400' : 'text-amber-400'}`} />
-          <span className="font-semibold">{formatTime(secondsElapsed)}</span>
-          {!isBothConnected && (
-            <span className="text-[10px] text-amber-400 flex items-center gap-0.5" title="Timer paused">
-              <PauseCircle className="w-3 h-3" /> Paused
+          <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-[11px] shadow-sm transition-all shrink-0 ${
+            !isPeerOnline 
+              ? 'border-rose-500/40 bg-rose-950/50 text-rose-300' 
+              : (isPaused ? 'border-amber-500/40 bg-amber-950/50 text-amber-300' : 'border-slate-700 bg-slate-950/80 text-slate-200')
+          }`}>
+            <div className="w-5 h-5 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center shrink-0">
+              {isTeacher ? (
+                <User className="w-3 h-3 text-indigo-400" title="Student" />
+              ) : (
+                <GraduationCap className="w-3 h-3 text-emerald-400" title="Teacher" />
+              )}
+            </div>
+
+            <span className="font-medium text-[10px] sm:text-[11px] truncate max-w-[150px] sm:max-w-[240px]">
+              {refreshFlashMessage || currentDisplayStatus}
             </span>
-          )}
+
+            <button
+              onClick={handleRefreshClick}
+              className="p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition shrink-0"
+              title="Refresh status"
+            >
+              <RefreshCw className="w-2.5 h-2.5 text-indigo-400 active:rotate-180 transition-transform" />
+            </button>
+          </div>
         </div>
 
-        <span className="text-slate-800">|</span>
+        {/* SECTION 2: TIMER METRICS & STATE ACTION BUTTONS */}
+        <div className="flex items-center justify-between md:justify-end gap-2 w-full md:w-auto shrink-0 border-t md:border-t-0 border-slate-800/80 pt-1 md:pt-0">
+          
+          {/* Symbol Timer & Billing Meter */}
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-xl font-mono text-xs shadow-inner shrink-0">
+            <div className="flex items-center gap-1 text-slate-200">
+              <Clock className={`w-3.5 h-3.5 ${sessionStatus === 'active' && !isPaused ? 'text-indigo-400 animate-pulse' : 'text-amber-400'}`} />
+              <span className="font-bold text-[11px] sm:text-xs">{formatTime(elapsedSeconds)}</span>
+              {isPaused && sessionStatus !== 'idle' && sessionStatus !== 'ended' && (
+                <span className="text-[10px] text-amber-400 flex items-center gap-0.5" title="Timer Paused">
+                  <PauseCircle className="w-3 h-3" />
+                </span>
+              )}
+            </div>
 
-        {isFreeTrial ? (
-          <div className="flex items-center gap-1 text-emerald-400 font-semibold text-[11px]">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Trial: {formatTime(Math.max(0, freeSeconds - secondsElapsed))} free</span>
+            <span className="text-slate-800">|</span>
+
+            {isFreeTrial ? (
+              <div className="flex items-center gap-1 text-emerald-400 font-bold text-[11px]" title="Free Trial Countdown">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{formatTime(remainingFreeSeconds)}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 text-amber-400 font-bold text-[11px]" title="Billing Metric">
+                <IndianRupee className="w-3.5 h-3.5 text-amber-400" />
+                <span>{ratePerMin} × {billableMinutes}m = ₹{currentCost}</span>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="flex items-center gap-1 text-amber-400 font-bold text-[11px]">
-            <IndianRupee className="w-3.5 h-3.5" />
-            <span>{billableMinutes}m • ₹{currentCost}</span>
+
+          {/* Action Controls */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => setShowExitConfirm(true)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-2 py-1 rounded-lg flex items-center gap-1 transition"
+              title="Leave room temporarily"
+            >
+              <LogOut className="w-3 h-3" />
+              <span className="hidden sm:inline">Exit</span>
+            </button>
+
+            {isTeacher && (
+              <>
+                {sessionStatus === 'idle' && (
+                  <button
+                    disabled={!isBothConnected}
+                    onClick={onStartSession}
+                    className={`text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow-sm ${
+                      isBothConnected 
+                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-indigo-600/30' 
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                    }`}
+                    title={!isBothConnected ? "Waiting for student to connect" : "Start the class"}
+                  >
+                    <PlayCircle className="w-3.5 h-3.5" />
+                    <span>Start Class</span>
+                  </button>
+                )}
+
+                {sessionStatus !== 'idle' && sessionStatus !== 'ended' && (
+                  <>
+                    {isPaused ? (
+                      <div className="bg-amber-950/70 border border-amber-500/50 text-amber-300 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-not-allowed">
+                        <PauseCircle className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Paused</span>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowStopConfirm(true)}
+                        className={`text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow-sm ${
+                          studentStopRequested 
+                            ? 'bg-amber-600 hover:bg-amber-500 text-white animate-pulse' 
+                            : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30'
+                        }`}
+                      >
+                        <StopCircle className="w-3.5 h-3.5" />
+                        <span>{studentStopRequested ? "Student: Stop" : "Stop Class"}</span>
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {sessionStatus === 'ended' && (
+                  <button
+                    onClick={onOpenReceiptModal}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow-emerald-600/30"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Bill & Receipt</span>
+                  </button>
+                )}
+              </>
+            )}
+
+            {!isTeacher && (
+              <>
+                {sessionStatus === 'active' && (
+                  <button
+                    onClick={onRequestStopSession}
+                    disabled={studentStopRequested}
+                    className={`text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition ${
+                      studentStopRequested
+                        ? 'bg-amber-950/80 border border-amber-500/50 text-amber-300 cursor-not-allowed'
+                        : 'bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30'
+                    }`}
+                  >
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>{studentStopRequested ? "Requested..." : "Request to Stop"}</span>
+                  </button>
+                )}
+
+                {isPaused && sessionStatus !== 'idle' && sessionStatus !== 'ended' && (
+                  <div className="bg-amber-950/70 border border-amber-500/50 text-amber-300 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    <PauseCircle className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Paused</span>
+                  </div>
+                )}
+
+                {sessionStatus === 'ended' && (
+                  <button
+                    onClick={onOpenReceiptModal}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow-emerald-600/30"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Pay & Receipt</span>
+                  </button>
+                )}
+              </>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      </header>
 
-      {/* 3. Right: Actions */}
-      <div className="flex items-center gap-2">
-        {/* Temporary Exit: Direct without summary */}
-        <button
-          onClick={() => setShowExitConfirm(true)}
-          className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
-          title="Return to dashboard. You can rejoin anytime."
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>Leave Room</span>
-        </button>
-
-        {/* Final End: Only this triggers summary and billing */}
-        {isTeacher ? (
-          <button
-            onClick={() => setShowCompleteConfirm(true)}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition shadow-lg shadow-emerald-600/20"
-          >
-            <CheckCircle className="w-3.5 h-3.5" />
-            <span>Complete Class</span>
-          </button>
-        ) : (
-          <button
-            onClick={() => {
-              if (window.confirm('Request educator to finish class & generate invoice?')) {
-                onEndSession(secondsElapsed);
-              }
-            }}
-            className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition"
-          >
-            <span>Finish Class</span>
-          </button>
-        )}
-      </div>
-
-      {/* Leave Room Dialog (NO SUMMARY, JUST GO BACK) */}
+      {/* Exit Confirmation Modal */}
       {showExitConfirm && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4 text-center">
-            <h3 className="font-bold text-white text-base">Leave Classroom Temporarily?</h3>
+        <div className="fixed inset-0 z-[9999] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl space-y-4 text-center">
+            <h3 className="font-bold text-white text-base">Exit Classroom?</h3>
             <p className="text-xs text-slate-400">
-              Your room will remain active. You can jump back in anytime from your dashboard.
+              The classroom remains open. You can jump back in anytime from your dashboard.
             </p>
             <div className="flex gap-2">
               <button
                 onClick={() => setShowExitConfirm(false)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2.5 rounded-xl"
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2 rounded-xl"
               >
                 Stay
               </button>
               <button
                 onClick={() => { setShowExitConfirm(false); onLeaveOnly(); }}
-                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2.5 rounded-xl"
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2 rounded-xl"
               >
-                Leave
+                Exit
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Complete Class Dialog (TRIGGERS FINAL INVOICE & NOTES) */}
-      {showCompleteConfirm && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-6 shadow-2xl space-y-4 text-center">
-            <div className="w-12 h-12 bg-emerald-950/60 border border-emerald-500/40 text-emerald-400 rounded-2xl flex items-center justify-center mx-auto">
-              <CheckCircle className="w-6 h-6" />
+      {/* Stop Class Modal */}
+      {showStopConfirm && (
+        <div className="fixed inset-0 z-[9999] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl space-y-4 text-center">
+            <div className="w-10 h-10 bg-rose-950/60 border border-rose-500/40 text-rose-400 rounded-xl flex items-center justify-center mx-auto">
+              <StopCircle className="w-5 h-5" />
             </div>
-            <h3 className="font-bold text-white text-base">Finalize & Complete Class?</h3>
+            <h3 className="font-bold text-white text-base">Stop Session & Bill?</h3>
             <p className="text-xs text-slate-400">
-              This will end the session, save notes to both dashboards, and generate the student invoice.
+              Timer will freeze, whiteboard notes will be saved, and payment invoice will be generated.
             </p>
             <div className="flex gap-2">
               <button
-                onClick={() => setShowCompleteConfirm(false)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2.5 rounded-xl"
+                onClick={() => setShowStopConfirm(false)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold py-2 rounded-xl"
               >
-                Resume Class
+                Resume
               </button>
               <button
-                onClick={() => { setShowCompleteConfirm(false); onEndSession(secondsElapsed); }}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-xl shadow-lg shadow-emerald-600/30"
+                onClick={handleStopClassSubmit}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold py-2 rounded-xl shadow-lg shadow-rose-600/30"
               >
-                End & Save Notes
+                Stop & Bill
               </button>
             </div>
           </div>
         </div>
       )}
-    </header>
+    </>
   );
 }

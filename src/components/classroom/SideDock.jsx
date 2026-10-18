@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Mic, MicOff, Video, VideoOff, Monitor, ChevronUp, ChevronDown, 
-  MessageSquare, Tv, Send, RotateCcw
+  MessageSquare, Tv, Send, User, GraduationCap
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -41,11 +41,9 @@ export default function SideDock({
     isCamOn: false
   });
 
-  // Connection & Activity Statuses in Full Readable Sentences
-  const [connectionStage, setConnectionStage] = useState('idle'); // 'idle' | 'signaling' | 'ice' | 'connected' | 'reconnecting' | 'failed'
-  const [leftDiagnosticSentence, setLeftDiagnosticSentence] = useState('Checking classroom status...');
-  const [centerPeerActionSentence, setCenterPeerActionSentence] = useState('Waiting for peer...');
-  const [isManualSyncing, setIsManualSyncing] = useState(false);
+  // Detailed Descriptive Backend / WebRTC States
+  const [connectionStage, setConnectionStage] = useState('idle');
+  const [diagnosticSentence, setDiagnosticSentence] = useState('Initializing classroom channels...');
 
   // Chat State
   const [chatMessages, setChatMessages] = useState(() => {
@@ -60,18 +58,22 @@ export default function SideDock({
 
   // WebRTC References
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const pcRef = useRef(null);
   const iceCandidatesQueueRef = useRef([]);
-  const typingTimeoutRef = useRef(null);
+  const headerActionTimeoutRef = useRef(null);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
   const userRole = currentUser?.role || (isTeacher ? 'teacher' : 'student');
   const userName = currentUser?.name || (isTeacher ? 'Teacher' : 'Student');
-  const peerName = isTeacher ? 'Student' : (tutorName || 'Teacher');
+  
+  const otherRole = isTeacher ? 'student' : 'teacher';
+  const matchedPeer = (peersInRoom || []).find((p) => p && p.role === otherRole);
+  const peerName = matchedPeer?.name || (isTeacher ? (activeSession?.student_name || activeSession?.studentName || 'Student') : (tutorName || activeSession?.teacher_name || 'Teacher'));
 
-  // Auto-Save Chat to Storage
+  // Auto-Save Chat
   useEffect(() => {
     try {
       localStorage.setItem(chatStorageKey, JSON.stringify(chatMessages));
@@ -85,6 +87,27 @@ export default function SideDock({
       localStorage.setItem('media_pref_cam', String(isCamOn));
     } catch (e) {}
   }, [isMicOn, isCamOn]);
+
+  // Re-attach video stream elements whenever video section is re-opened (fixes collapse unsync)
+  useEffect(() => {
+    if (isVideoSectionOpen) {
+      if (localVideoRef.current && localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      if (remoteVideoRef.current && remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        remoteVideoRef.current.play().catch(() => {});
+      }
+      if (broadcast) {
+        broadcast('media:status_change', {
+          senderRole: userRole,
+          senderName: userName,
+          isMicOn,
+          isCamOn
+        });
+      }
+    }
+  }, [isVideoSectionOpen, broadcast, userRole, userName, isMicOn, isCamOn]);
 
   // Broadcast Local Media State
   const broadcastMediaStatus = useCallback((micState, camState) => {
@@ -102,7 +125,7 @@ export default function SideDock({
   const initLocalStream = useCallback(async () => {
     if (localStreamRef.current) return localStreamRef.current;
     try {
-      setLeftDiagnosticSentence('Accessing camera and microphone...');
+      setDiagnosticSentence('Detecting camera and microphone devices...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -115,18 +138,18 @@ export default function SideDock({
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-      setLeftDiagnosticSentence('Devices initialized successfully');
+      setDiagnosticSentence('Local audio and video channels active');
       return stream;
     } catch (err) {
-      console.warn('Media fallback to audio:', err);
+      console.warn('Fallback to audio only:', err);
       try {
         const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         audioOnly.getAudioTracks().forEach((t) => { t.enabled = isMicOn; });
         localStreamRef.current = audioOnly;
-        setLeftDiagnosticSentence('Audio only initialized (Camera blocked)');
+        setDiagnosticSentence('Microphone online (Video camera blocked/unavailable)');
         return audioOnly;
       } catch (e) {
-        setLeftDiagnosticSentence('Device access denied by browser');
+        setDiagnosticSentence('Device permission denied by web browser');
         return null;
       }
     }
@@ -137,7 +160,7 @@ export default function SideDock({
     if (pcRef.current) return pcRef.current;
 
     setConnectionStage('signaling');
-    setLeftDiagnosticSentence('Negotiating secure peer connection...');
+    setDiagnosticSentence('Exchanging WebRTC handshake with peer...');
 
     const pc = new RTCPeerConnection(ICE_SERVERS);
     pcRef.current = pc;
@@ -149,12 +172,13 @@ export default function SideDock({
     }
 
     pc.ontrack = (event) => {
-      setLeftDiagnosticSentence('Audio and video streams established');
       const remoteStream = event.streams[0] || new MediaStream([event.track]);
+      remoteStreamRef.current = remoteStream;
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
         remoteVideoRef.current.play().catch(() => {});
       }
+      setDiagnosticSentence('Live encrypted audio/video peer connection established');
     };
 
     pc.onicecandidate = (event) => {
@@ -170,16 +194,16 @@ export default function SideDock({
       const state = pc.iceConnectionState;
       if (state === 'checking') {
         setConnectionStage('ice');
-        setLeftDiagnosticSentence('Verifying network ICE connection...');
+        setDiagnosticSentence('Verifying network routes (ICE candidate discovery)...');
       } else if (state === 'connected' || state === 'completed') {
         setConnectionStage('connected');
-        setLeftDiagnosticSentence('Connected: Audio & video live');
+        setDiagnosticSentence('Secure 1-on-1 media bridge fully connected');
       } else if (state === 'disconnected') {
         setConnectionStage('reconnecting');
-        setLeftDiagnosticSentence('Network interrupted, reconnecting...');
+        setDiagnosticSentence('Network fluctuating, auto-recovering media stream...');
       } else if (state === 'failed') {
         setConnectionStage('failed');
-        setLeftDiagnosticSentence('Connection failed, restarting ICE...');
+        setDiagnosticSentence('Media channel interrupted, re-negotiating connection...');
         pc.restartIce();
       }
     };
@@ -187,10 +211,10 @@ export default function SideDock({
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         setConnectionStage('connected');
-        setLeftDiagnosticSentence('Connected: Live sync active');
+        setDiagnosticSentence('Live encrypted audio/video peer connection established');
       } else if (['failed', 'closed'].includes(pc.connectionState)) {
         setConnectionStage('failed');
-        setLeftDiagnosticSentence('Peer disconnected from room');
+        setDiagnosticSentence('Peer disconnected from secure media channel');
       }
     };
 
@@ -204,7 +228,7 @@ export default function SideDock({
 
     try {
       setConnectionStage('signaling');
-      setLeftDiagnosticSentence('Sending call offer to peer...');
+      setDiagnosticSentence('Sending peer connection invitation...');
 
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -221,48 +245,18 @@ export default function SideDock({
       }
     } catch (err) {
       console.error('Call offer error:', err);
-      setLeftDiagnosticSentence('Signaling offer generation failed');
+      setDiagnosticSentence('Failed to generate call handshake offer');
     }
   }, [initLocalStream, getOrCreatePeerConnection, broadcast, userRole, userName]);
 
-  // 4. Force Resync All Backend Services & WebRTC
-  const handleForceResyncServices = async () => {
-    setIsManualSyncing(true);
-    setLeftDiagnosticSentence('Forcing full backend & WebRTC resync...');
-    try {
-      const saved = localStorage.getItem(chatStorageKey);
-      if (saved) {
-        setChatMessages(JSON.parse(saved));
-      }
-
-      const pc = pcRef.current;
-      if (pc) {
-        pc.restartIce();
-      }
-      await initiateCall();
-
-      broadcastMediaStatus(isMicOn, isCamOn);
-
-      if (broadcast) {
-        broadcast('room:request_state', { senderRole: userRole });
-      }
-
-      setLeftDiagnosticSentence('Backend services resynced');
-    } catch (e) {
-      setLeftDiagnosticSentence('Resync error, retrying...');
-    } finally {
-      setTimeout(() => setIsManualSyncing(false), 800);
-    }
-  };
-
-  // 5. Realtime Listeners for Rejoin & State Recovery
+  // 4. Realtime Listeners
   useEffect(() => {
     if (!registerListener) return;
 
     registerListener('room:peer_joined', async (data) => {
       if (data && data.senderRole !== userRole) {
-        setCenterPeerActionSentence(`${data.senderName || peerName} joined the room`);
-        setLeftDiagnosticSentence('Peer rejoined, auto-reconnecting call...');
+        setDiagnosticSentence(`Peer (${data.senderName || peerName}) joined, syncing channels...`);
+        broadcastMediaStatus(isMicOn, isCamOn);
         if (isTeacher) {
           setTimeout(() => initiateCall(), 600);
         }
@@ -275,27 +269,6 @@ export default function SideDock({
           isMicOn: Boolean(data.isMicOn),
           isCamOn: Boolean(data.isCamOn)
         });
-
-        const pName = data.senderName || peerName;
-        if (!data.isCamOn && !data.isMicOn) {
-          setCenterPeerActionSentence(`${pName} turned off camera and muted mic`);
-        } else if (!data.isCamOn) {
-          setCenterPeerActionSentence(`${pName} turned off camera`);
-        } else if (!data.isMicOn) {
-          setCenterPeerActionSentence(`${pName} is muted`);
-        } else {
-          setCenterPeerActionSentence(`${pName} turned on camera and mic`);
-        }
-      }
-    });
-
-    registerListener('chat:typing', (data) => {
-      if (data && data.senderRole !== userRole) {
-        setCenterPeerActionSentence(`${data.senderName || peerName} is typing a message...`);
-        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-        typingTimeoutRef.current = setTimeout(() => {
-          setCenterPeerActionSentence(`${peerName} is in room`);
-        }, 2200);
       }
     });
 
@@ -306,8 +279,7 @@ export default function SideDock({
 
       try {
         setConnectionStage('signaling');
-        setLeftDiagnosticSentence('Call offer received, generating answer...');
-        setCenterPeerActionSentence(`${data.senderName || peerName} is connecting...`);
+        setDiagnosticSentence('Connection invitation received, generating answer...');
 
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
 
@@ -336,7 +308,7 @@ export default function SideDock({
       const pc = pcRef.current;
       if (pc && pc.signalingState !== 'stable') {
         try {
-          setLeftDiagnosticSentence('Handshake confirmed with peer');
+          setDiagnosticSentence('Handshake finalized, opening audio and video streams');
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
 
           while (iceCandidatesQueueRef.current.length > 0) {
@@ -369,7 +341,6 @@ export default function SideDock({
 
     registerListener('chat:new_message', (msg) => {
       if (msg && msg.senderRole !== userRole) {
-        setCenterPeerActionSentence(`${msg.senderName} sent a message`);
         setChatMessages((prev) => {
           const exists = prev.some((m) => m.id === msg.id);
           if (exists) return prev;
@@ -391,18 +362,19 @@ export default function SideDock({
     initLocalStream().then(() => {
       if (broadcast) {
         broadcast('room:peer_joined', { senderRole: userRole, senderName: userName });
+        broadcastMediaStatus(isMicOn, isCamOn);
       }
       if (isTeacher) {
-        setCenterPeerActionSentence('Waiting for student to connect...');
+        setDiagnosticSentence('Educator online, waiting for student media link...');
         const t = setTimeout(() => initiateCall(), 1200);
         return () => clearTimeout(t);
       } else {
-        setCenterPeerActionSentence('Connected as student');
+        setDiagnosticSentence('Student online, connecting to educator stream...');
       }
     });
-  }, [initLocalStream, broadcast, isTeacher, initiateCall, userRole, userName]);
+  }, [initLocalStream, broadcast, isTeacher, initiateCall, userRole, userName, broadcastMediaStatus, isMicOn, isCamOn]);
 
-  // 6. Mic & Cam Toggles
+  // 5. Mic & Cam Toggles
   const toggleMic = () => {
     if (!localStreamRef.current) return;
     const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -436,7 +408,23 @@ export default function SideDock({
     setInputMessage(e.target.value);
     if (broadcast) {
       broadcast('chat:typing', { senderRole: userRole, senderName: userName });
+      broadcast('peer:action_update', {
+        senderRole: userRole,
+        action: 'typing',
+        tab: 'call_chat'
+      });
     }
+
+    if (headerActionTimeoutRef.current) clearTimeout(headerActionTimeoutRef.current);
+    headerActionTimeoutRef.current = setTimeout(() => {
+      if (broadcast) {
+        broadcast('peer:action_update', {
+          senderRole: userRole,
+          action: 'idle',
+          tab: 'call_chat'
+        });
+      }
+    }, 2200);
   };
 
   const handleSendMessage = (e) => {
@@ -454,8 +442,14 @@ export default function SideDock({
     setChatMessages((prev) => [...prev, newMsg]);
     setInputMessage('');
 
+    if (headerActionTimeoutRef.current) clearTimeout(headerActionTimeoutRef.current);
     if (broadcast) {
       broadcast('chat:new_message', newMsg);
+      broadcast('peer:action_update', {
+        senderRole: userRole,
+        action: 'idle',
+        tab: 'call_chat'
+      });
     }
   };
 
@@ -467,6 +461,9 @@ export default function SideDock({
       if (pcRef.current) {
         pcRef.current.close();
       }
+      if (headerActionTimeoutRef.current) {
+        clearTimeout(headerActionTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -476,70 +473,55 @@ export default function SideDock({
       {/* 1. TOP VIDEO & AUDIO HUB */}
       <div className="border-b border-slate-800 bg-slate-900/90 shrink-0">
         
-        {/* RESPONSIVE TOP BAR */}
-        <div className="px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 min-w-0">
+        {/* RESPONSIVE TOP BAR: Role Symbol + Diagnostic Sentence + Accordion Toggle */}
+        <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
           
-          {/* Top Row: Resync Icon Button + Left Diagnostic Status + Hide Icon Button */}
-          <div className="flex items-center justify-between w-full min-w-0 gap-1.5">
-            
-            {/* Left: Icon-Only Resync Button + Left Diagnostic Sentence */}
-            <div className="flex items-center gap-1.5 min-w-0 shrink">
-              <button
-                onClick={handleForceResyncServices}
-                disabled={isManualSyncing}
-                className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-indigo-400 transition shrink-0"
-                title="Force-resync call, chat & backend services"
-              >
-                <RotateCcw className={`w-3.5 h-3.5 ${isManualSyncing ? 'animate-spin text-indigo-400' : ''}`} />
-              </button>
-
-              <div 
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-mono truncate max-w-[130px] sm:max-w-[170px] ${
-                  connectionStage === 'connected'
-                    ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-300'
-                    : connectionStage === 'failed'
-                    ? 'bg-rose-950/60 border-rose-500/30 text-rose-300'
-                    : 'bg-amber-950/60 border-amber-500/30 text-amber-300'
-                }`}
-                title={leftDiagnosticSentence}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                  connectionStage === 'connected' 
-                    ? 'bg-emerald-400' 
-                    : connectionStage === 'failed' 
-                    ? 'bg-rose-500' 
-                    : 'bg-amber-400 animate-ping'
-                }`} />
-                <span className="truncate">{leftDiagnosticSentence}</span>
-              </div>
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            {/* Clean Role Symbol Indicator */}
+            <div className="w-6 h-6 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center shrink-0">
+              {isTeacher ? (
+                <GraduationCap className="w-3.5 h-3.5 text-indigo-400" title="Educator Channel" />
+              ) : (
+                <User className="w-3.5 h-3.5 text-emerald-400" title="Student Channel" />
+              )}
             </div>
 
-            {/* Right: Icon-Only Hide/Show Accordion Button */}
-            <button
-              onClick={() => setIsVideoSectionOpen(!isVideoSectionOpen)}
-              className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white transition shrink-0"
-              title={isVideoSectionOpen ? 'Hide Video' : 'Show Video'}
+            {/* Clear Descriptive Backend Diagnostic Status */}
+            <div 
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-[10px] font-mono truncate max-w-[220px] sm:max-w-[280px] ${
+                connectionStage === 'connected'
+                  ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-300'
+                  : connectionStage === 'failed'
+                  ? 'bg-rose-950/60 border-rose-500/30 text-rose-300'
+                  : 'bg-amber-950/60 border-amber-500/30 text-amber-300'
+              }`}
+              title={diagnosticSentence}
             >
-              {isVideoSectionOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                connectionStage === 'connected' 
+                  ? 'bg-emerald-400' 
+                  : connectionStage === 'failed' 
+                  ? 'bg-rose-500' 
+                  : 'bg-amber-400 animate-ping'
+              }`} />
+              <span className="truncate">{diagnosticSentence}</span>
+            </div>
           </div>
 
-          {/* Under-Row (Centered on compact / narrow space): Student & Teacher Interaction Indicator */}
-          <div className="w-full flex items-center justify-center pt-0.5">
-            <span 
-              className="text-[10px] font-mono text-slate-300 truncate text-center w-full bg-slate-950/80 border border-slate-800/80 px-2 py-0.5 rounded shadow-inner"
-              title={centerPeerActionSentence}
-            >
-              {centerPeerActionSentence}
-            </span>
-          </div>
+          {/* Video Accordion Button */}
+          <button
+            onClick={() => setIsVideoSectionOpen(!isVideoSectionOpen)}
+            className="p-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white transition shrink-0"
+            title={isVideoSectionOpen ? 'Hide Video' : 'Show Video'}
+          >
+            {isVideoSectionOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
 
         </div>
 
         {isVideoSectionOpen && (
           <div className="px-3 pb-3 pt-1 flex flex-col gap-2">
             
-            {/* 2 Webcam Cards */}
             <div className="grid grid-cols-2 gap-2">
               
               {/* Card 1: Self */}
@@ -645,7 +627,6 @@ export default function SideDock({
                 {isCamOn ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4 text-rose-400" />}
               </button>
 
-              {/* Screen Share (Coming Soon) */}
               <button
                 disabled
                 className="p-2 rounded-lg transition bg-slate-900/60 text-slate-600 border border-slate-800 cursor-not-allowed relative"
@@ -693,8 +674,6 @@ export default function SideDock({
 
       {/* 3. SUB-TAB CONTENT AREA */}
       <div className="flex-1 overflow-hidden relative flex flex-col min-h-0 bg-slate-950/30">
-        
-        {/* TAB 1: LIVE CHAT */}
         {activeSideTab === 'chat' && (
           <div className="flex-1 flex flex-col h-full overflow-hidden">
             <div className="flex-1 p-3 overflow-y-auto space-y-2.5">
@@ -751,7 +730,6 @@ export default function SideDock({
           </div>
         )}
 
-        {/* TAB 2: SCREEN VIEW */}
         {activeSideTab === 'screen' && (
           <div className="flex-1 flex flex-col h-full overflow-hidden p-2">
             <div className="flex-1 bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center relative shadow-inner">
@@ -765,7 +743,6 @@ export default function SideDock({
             </div>
           </div>
         )}
-
       </div>
 
     </div>
