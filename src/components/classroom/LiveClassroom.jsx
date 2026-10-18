@@ -22,6 +22,8 @@ export default function LiveClassroom() {
   const ratePerMin = activeSession?.rate ?? 5;
   const tutorName = activeSession?.teacherName || activeSession?.teacher_name || 'Verified Educator';
 
+  const timeCacheKey = `session_time_${roomId}`;
+
   // Mobile View Switcher: 'whiteboard' | 'call_chat'
   const [mobileView, setMobileView] = useState('whiteboard');
 
@@ -41,9 +43,26 @@ export default function LiveClassroom() {
   const [lockStudentView, setLockStudentView] = useState(true);
   const [isStudentAllowed, setIsStudentAllowed] = useState(false);
   
-  // Master Session State: 'idle' | 'active' | 'paused' | 'ended'
-  const [sessionStatus, setSessionStatus] = useState('idle');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // Master Session State
+  const [sessionStatus, setSessionStatus] = useState(() => {
+    try {
+      const savedStatus = localStorage.getItem(`session_status_${roomId}`);
+      return savedStatus || 'idle';
+    } catch (e) {
+      return 'idle';
+    }
+  });
+
+  // Rejoin-safe Elapsed Time: Loads persisted seconds instead of restarting at 0
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => {
+    try {
+      const savedSec = localStorage.getItem(timeCacheKey);
+      return savedSec ? Number(savedSec) : (activeSession?.actual_connected_seconds || 0);
+    } catch (e) {
+      return 0;
+    }
+  });
+
   const [studentStopRequested, setStudentStopRequested] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
 
@@ -56,6 +75,14 @@ export default function LiveClassroom() {
   const otherRole = isTeacher ? 'student' : 'teacher';
   const isPeerOnline = peersInRoom.some((p) => p.role === otherRole);
   const isBothConnected = isPeerOnline;
+
+  // Persist session state & seconds
+  useEffect(() => {
+    try {
+      localStorage.setItem(timeCacheKey, String(elapsedSeconds));
+      localStorage.setItem(`session_status_${roomId}`, sessionStatus);
+    } catch (e) {}
+  }, [elapsedSeconds, sessionStatus, timeCacheKey, roomId]);
 
   // Auto-Lock to Receipt if session was previously completed or payment pending
   useEffect(() => {
@@ -104,7 +131,7 @@ export default function LiveClassroom() {
     };
   }, []);
 
-  // MASTER TIMER ENGINE (Teacher acts as the single source of truth)
+  // MASTER TIMER ENGINE (Runs only when Active & Both Connected)
   useEffect(() => {
     let timer = null;
     const shouldRun = sessionStatus === 'active' && isBothConnected;
@@ -113,7 +140,7 @@ export default function LiveClassroom() {
       timer = setInterval(() => {
         setElapsedSeconds((prev) => {
           const nextSec = prev + 1;
-          // Teacher heartbeats the exact seconds to student
+          // Teacher heartbeats exact seconds to student
           if (isTeacher && broadcast && nextSec % 2 === 0) {
             broadcast('session:time_sync', { elapsedSec: nextSec });
           }
@@ -127,12 +154,12 @@ export default function LiveClassroom() {
     };
   }, [sessionStatus, isBothConnected, isTeacher, broadcast]);
 
-  // DISCONNECT AUTO-PAUSE & RECONNECT RESUME LOGIC
+  // DISCONNECT AUTO-PAUSE & RECONNECT RESUME LOGIC (No Reset)
   useEffect(() => {
     if (sessionStatus === 'active' && !isBothConnected) {
       setSessionStatus('paused');
       if (broadcast) {
-        broadcast('session:status_sync', { status: 'paused' });
+        broadcast('session:status_sync', { status: 'paused', elapsedSec: elapsedSeconds });
       }
     } else if (sessionStatus === 'paused' && isBothConnected) {
       setSessionStatus('active');
@@ -142,7 +169,7 @@ export default function LiveClassroom() {
     }
   }, [isBothConnected, sessionStatus, broadcast, elapsedSeconds]);
 
-  // Sync Listeners: Classroom View Lock, Peer Actions, Timing, and Session Lifecycle
+  // Sync Listeners: View Lock, Timing, Reconnect Recovery, and Cancel Requests
   useEffect(() => {
     if (!registerListener) return;
 
@@ -150,7 +177,7 @@ export default function LiveClassroom() {
       broadcast('room:request_state', {});
     }
 
-    // Initial state request by late-joining student
+    // Rejoining peer asks for current state & time
     registerListener('room:request_state', () => {
       if (isTeacher && broadcast) {
         broadcast('classroom:sync_view', {
@@ -171,7 +198,7 @@ export default function LiveClassroom() {
       }
     });
 
-    // Realtime Whiteboard & Chat status sync for ClassroomHeader
+    // Realtime Whiteboard & Chat status sync
     registerListener('peer:action_update', (data) => {
       if (data && data.senderRole !== userRole) {
         setPeerActionState({
@@ -183,7 +210,7 @@ export default function LiveClassroom() {
       }
     });
 
-    // Session Status Sync (Start / Pause / Resume)
+    // Session Status & Time Sync
     registerListener('session:status_sync', (data) => {
       if (data?.status) {
         setSessionStatus(data.status);
@@ -193,17 +220,23 @@ export default function LiveClassroom() {
       }
     });
 
-    // Time Heartbeat from Teacher to Student
     registerListener('session:time_sync', (data) => {
       if (!isTeacher && data?.elapsedSec !== undefined) {
         setElapsedSeconds(data.elapsedSec);
       }
     });
 
-    // Student Request to Stop notification
+    // Student Request to Stop
     registerListener('session:request_stop', (data) => {
       if (isTeacher && data?.requested !== undefined) {
         setStudentStopRequested(data.requested);
+      }
+    });
+
+    // Student Cancels Stop Request
+    registerListener('session:cancel_request_stop', () => {
+      if (isTeacher) {
+        setStudentStopRequested(false);
       }
     });
 
@@ -217,7 +250,7 @@ export default function LiveClassroom() {
     });
   }, [registerListener, isTeacher, broadcast, userRole, lockStudentView, isStudentAllowed, sessionStatus, elapsedSeconds]);
 
-  // Mobile View Switcher & Broadcast
+  // Mobile View Switcher
   const handleMobileViewChange = (view) => {
     setMobileView(view);
     if (broadcast) {
@@ -269,7 +302,15 @@ export default function LiveClassroom() {
     }
   };
 
-  // Final Session End (Teacher stops and finalizes invoice)
+  // Student Cancels / Retrieves Stop Request
+  const handleCancelRequestStop = () => {
+    setStudentStopRequested(false);
+    if (broadcast) {
+      broadcast('session:cancel_request_stop', {});
+    }
+  };
+
+  // Final Session End
   const handleEndSession = async (finalSeconds) => {
     const recordedTime = typeof finalSeconds === 'number' ? finalSeconds : elapsedSeconds;
     setElapsedSeconds(recordedTime);
@@ -307,10 +348,14 @@ export default function LiveClassroom() {
     setActiveTab(isTeacher ? 'teacher' : 'student');
   };
 
+  const resolvedPeerName = isTeacher
+    ? (peersInRoom.find(p => p.role === 'student')?.name || activeSession?.student_name || 'Student')
+    : (peersInRoom.find(p => p.role === 'teacher')?.name || tutorName || activeSession?.teacher_name || 'Teacher');
+
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-full bg-slate-950 overflow-hidden select-none">
       
-      {/* 1. TOP HEADER (STATUS, PURE SYMBOL TIMER & ACTION FLOW) */}
+      {/* 1. TOP HEADER */}
       <ClassroomHeader
         subjectTitle={subjectTitle}
         topicTitle={topicTitle}
@@ -322,14 +367,12 @@ export default function LiveClassroom() {
         elapsedSeconds={elapsedSeconds}
         studentStopRequested={studentStopRequested}
         onRequestStopSession={handleRequestStopSession}
+        onCancelRequestStop={handleCancelRequestStop}
         peersInRoom={peersInRoom}
         currentUserRole={userRole}
         currentUserName={userName}
-peerUserName={
-  isTeacher 
-    ? (peersInRoom.find(p => p.role === 'student')?.name || activeSession?.student_name || 'Student') 
-    : (peersInRoom.find(p => p.role === 'teacher')?.name || tutorName || activeSession?.teacher_name || 'Teacher')
-}        peerActionState={peerActionState}
+        peerUserName={resolvedPeerName}
+        peerActionState={peerActionState}
         onOpenReceiptModal={() => setShowReceipt(true)}
       />
 
@@ -386,8 +429,6 @@ peerUserName={
 
       {/* 3. MAIN WORKSPACE: WHITEBOARD + RESIZABLE SIDEDOCK */}
       <div ref={containerRef} className="flex-1 flex w-full max-w-full overflow-hidden relative min-h-0">
-        
-        {/* Full Interactive Whiteboard Area */}
         <div className={`h-full flex-col min-h-0 overflow-hidden relative flex-1 w-full max-w-full ${
           mobileView === 'call_chat' ? 'hidden md:flex' : 'flex'
         }`}>
@@ -401,7 +442,6 @@ peerUserName={
           />
         </div>
 
-        {/* Resizable Divider Handle (Desktop) */}
         <div
           onMouseDown={handleMouseDown}
           className="hidden md:flex w-2 hover:w-2.5 cursor-col-resize bg-slate-950 border-x border-slate-800 hover:bg-indigo-600/40 hover:border-indigo-500/60 items-center justify-center transition-all z-20 group shrink-0"
@@ -410,7 +450,6 @@ peerUserName={
           <GripVertical className="w-3 h-3 text-slate-600 group-hover:text-indigo-400" />
         </div>
 
-        {/* Right SideDock: Video & Live Chat */}
         <div 
           className={`h-full flex-col min-h-0 border-l border-slate-800 bg-slate-900 shrink-0 w-full md:w-[var(--desktop-dock-w)] ${
             mobileView === 'call_chat' ? 'flex' : 'hidden md:flex'
@@ -426,7 +465,6 @@ peerUserName={
             currentUser={currentUser}
           />
         </div>
-
       </div>
 
       {/* 4. MOBILE BOTTOM TOGGLE */}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   Clock, ShieldCheck, LogOut, IndianRupee, PauseCircle, PlayCircle, 
-  StopCircle, FileText, User, GraduationCap, RefreshCw, AlertCircle
+  StopCircle, FileText, User, GraduationCap, RefreshCw, AlertCircle, XCircle
 } from 'lucide-react';
 
 export default function ClassroomHeader({ 
@@ -15,6 +15,7 @@ export default function ClassroomHeader({
   elapsedSeconds = 0,
   studentStopRequested = false,
   onRequestStopSession,
+  onCancelRequestStop,
   peersInRoom = [],
   currentUserRole = 'student',
   currentUserName = 'User',
@@ -51,7 +52,6 @@ export default function ClassroomHeader({
   const billableMinutes = isFreeTrial ? 0 : Math.ceil((elapsedSeconds - freeSeconds) / 60);
   const currentCost = billableMinutes * ratePerMin;
 
-  // Real-time Action Message: Teacher "teaching", Student "learning"
   const getRealTimeStatusMessage = () => {
     if (isPeerInAnotherRoom) return `${activePeerName} is in another session`;
     
@@ -81,7 +81,6 @@ export default function ClassroomHeader({
     }
 
     if (sessionStatus === 'active') {
-      // Teacher teaches, student learns
       return isTeacher 
         ? `${activePeerName} is actively learning` 
         : `${activePeerName} is actively teaching`;
@@ -186,15 +185,8 @@ export default function ClassroomHeader({
 
           {/* Action Controls */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              onClick={() => setShowExitConfirm(true)}
-              className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-2 py-1 rounded-lg flex items-center gap-1 transition"
-              title="Leave room temporarily"
-            >
-              <LogOut className="w-3 h-3" />
-              <span className="hidden sm:inline">Exit</span>
-            </button>
 
+            {/* TEACHER WORKFLOW */}
             {isTeacher && (
               <>
                 {sessionStatus === 'idle' && (
@@ -248,21 +240,30 @@ export default function ClassroomHeader({
               </>
             )}
 
+            {/* STUDENT WORKFLOW */}
             {!isTeacher && (
               <>
                 {sessionStatus === 'active' && (
-                  <button
-                    onClick={onRequestStopSession}
-                    disabled={studentStopRequested}
-                    className={`text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition ${
-                      studentStopRequested
-                        ? 'bg-amber-950/80 border border-amber-500/50 text-amber-300 cursor-not-allowed'
-                        : 'bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30'
-                    }`}
-                  >
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    <span>{studentStopRequested ? "Requested..." : "Request to Stop"}</span>
-                  </button>
+                  <>
+                    {studentStopRequested ? (
+                      <button
+                        onClick={onCancelRequestStop}
+                        className="bg-amber-950/80 hover:bg-amber-900 border border-amber-500/60 text-amber-300 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow"
+                        title="Cancel stop request"
+                      >
+                        <XCircle className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Cancel Request</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={onRequestStopSession}
+                        className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>Request to Stop</span>
+                      </button>
+                    )}
+                  </>
                 )}
 
                 {isPaused && sessionStatus !== 'idle' && sessionStatus !== 'ended' && (
@@ -283,6 +284,17 @@ export default function ClassroomHeader({
                 )}
               </>
             )}
+
+            {/* EXIT ROOM BUTTON PLACED AT THE VERY LAST POSITION */}
+            <button
+              onClick={() => setShowExitConfirm(true)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 transition ml-1"
+              title="Leave room temporarily"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Exit</span>
+            </button>
+
           </div>
         </div>
       </header>
