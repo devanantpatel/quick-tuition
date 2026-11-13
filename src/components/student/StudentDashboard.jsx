@@ -6,9 +6,9 @@ import TutorCard from './TutorCard';
 import BookingModal from './BookingModal';
 import { 
   Search, Users, Filter, BookOpen, Clock, Video, 
-  CheckCircle2, AlertCircle, Sparkles, X, ChevronDown, 
-  History, Wifi, WifiOff, Loader2, RefreshCw, ChevronUp,
-  Calendar, Trash2, Download, Eye
+  CheckCircle2, Sparkles, X, ChevronDown, 
+  History, Loader2, RefreshCw, ChevronUp,
+  Calendar, Trash2, Eye
 } from 'lucide-react';
 
 export default function StudentDashboard() {
@@ -32,7 +32,6 @@ export default function StudentDashboard() {
   // Search & Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTeacherId, setSelectedTeacherId] = useState('ALL');
-  const [onlyOnlineTeachers, setOnlyOnlineTeachers] = useState(false);
   const [onlyFree, setOnlyFree] = useState(false);
 
   // Modal State
@@ -58,7 +57,6 @@ export default function StudentDashboard() {
             teacherId: sub.teacher_id,
             teacherName: sub.profiles?.name || 'Verified Educator',
             teacherHeadline: sub.profiles?.headline || 'Subject Mentor',
-            isOnline: Boolean(sub.profiles?.is_online),
             title: sub.title,
             rate: sub.rate ?? 5,
             freeMins: sub.free_mins ?? 10,
@@ -150,8 +148,7 @@ export default function StudentDashboard() {
     if (c.teacherId && !uniqueTeachersMap.has(c.teacherId)) {
       uniqueTeachersMap.set(c.teacherId, {
         id: c.teacherId,
-        name: c.teacherName,
-        isOnline: c.isOnline
+        name: c.teacherName
       });
     }
   });
@@ -168,10 +165,9 @@ export default function StudentDashboard() {
       )
     );
     const matchesTeacher = selectedTeacherId === 'ALL' || course.teacherId === selectedTeacherId;
-    const matchesOnline = onlyOnlineTeachers ? course.isOnline : true;
     const matchesFree = onlyFree ? course.rate === 0 : true;
 
-    return matchesSearch && matchesTeacher && matchesOnline && matchesFree;
+    return matchesSearch && matchesTeacher && matchesFree;
   });
 
   // Confirm Booking
@@ -222,11 +218,11 @@ export default function StudentDashboard() {
   const activeLiveRoom = requestsList.find(r => r.status === 'accepted' && r.room_status === 'active');
 
   return (
-    <main className="flex-1 max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6 w-full">
+    <main className="flex-1 max-w-6xl mx-auto px-4 md:px-8 py-6 space-y-6 w-full min-w-0 overflow-x-hidden">
       {/* 1. Header & Sync Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-        <div>
-          <h2 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2">
+        <div className="min-w-0">
+          <h2 className="text-xl md:text-2xl font-bold text-white flex flex-wrap items-center gap-2">
             <span>Student Dashboard</span>
             <span className="text-[11px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded-full">
               Live Connect
@@ -240,7 +236,7 @@ export default function StudentDashboard() {
         <button
           onClick={() => loadDashboardData(true)}
           disabled={isRefreshing}
-          className="self-start sm:self-auto bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition shadow-sm"
+          className="self-start sm:self-auto bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition shadow-sm shrink-0"
         >
           <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshing ? 'animate-spin' : ''}`} />
           <span>{isRefreshing ? 'Syncing...' : 'Sync Live Updates'}</span>
@@ -250,10 +246,10 @@ export default function StudentDashboard() {
       {/* TOP PERSISTENT ACTIVE ROOM BANNER */}
       {activeLiveRoom && (
         <div className="p-4 bg-gradient-to-r from-emerald-950/90 via-slate-900 to-indigo-950/80 border border-emerald-500/50 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xl animate-pulse">
-          <div className="flex items-center gap-3">
-            <span className="w-3 h-3 rounded-full bg-emerald-400" />
-            <div>
-              <h4 className="text-white text-sm font-bold flex items-center gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="w-3 h-3 rounded-full bg-emerald-400 shrink-0" />
+            <div className="min-w-0">
+              <h4 className="text-white text-sm font-bold flex flex-wrap items-center gap-2">
                 <span>Your Live Classroom is Ready!</span>
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30">
                   {activeLiveRoom.subject}
@@ -276,9 +272,9 @@ export default function StudentDashboard() {
       )}
 
       {/* 2. Top Section (Requests & History) */}
-      <div className="p-4 md:p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3.5 shadow-lg">
-        <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-          <div className="flex items-center gap-2">
+      <div className="p-4 md:p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3.5 shadow-lg w-full min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => { setTopSectionView('requests'); setIsTopSectionCollapsed(false); }}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition ${
@@ -316,7 +312,7 @@ export default function StudentDashboard() {
 
           <button
             onClick={() => setIsTopSectionCollapsed(!isTopSectionCollapsed)}
-            className="text-slate-400 hover:text-white text-xs flex items-center gap-1 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 transition"
+            className="text-slate-400 hover:text-white text-xs flex items-center gap-1 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 transition shrink-0"
           >
             <span>{isTopSectionCollapsed ? 'Show Section' : 'Minimize'}</span>
             {isTopSectionCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
@@ -339,41 +335,41 @@ export default function StudentDashboard() {
                     return (
                       <div 
                         key={r.id} 
-                        className={`p-3.5 rounded-xl bg-slate-950 border transition flex flex-col justify-between space-y-3 ${
+                        className={`min-w-0 p-3.5 rounded-xl bg-slate-950 border transition flex flex-col justify-between space-y-3 ${
                           isRoomReady ? 'border-emerald-500/60 ring-1 ring-emerald-500/30' : 'border-slate-800'
                         }`}
                       >
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border flex items-center gap-1 ${
+                        <div className="space-y-2 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border flex items-center gap-1 truncate ${
                               isRoomReady ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                               isPreparing ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20' :
                               'bg-amber-500/10 text-amber-400 border-amber-500/20'
                             }`}>
-                              {isRoomReady && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                              {isPreparing && <Clock className="w-3 h-3 text-indigo-400" />}
-                              {r.status === 'pending' && <Clock className="w-3 h-3 animate-spin text-amber-400" />}
-                              <span>{isRoomReady ? 'Room Active' : isPreparing ? 'Accepted (Preparing)' : 'Pending'}</span>
+                              {isRoomReady && <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />}
+                              {isPreparing && <Clock className="w-3 h-3 text-indigo-400 shrink-0" />}
+                              {r.status === 'pending' && <Clock className="w-3 h-3 animate-spin text-amber-400 shrink-0" />}
+                              <span className="truncate">{isRoomReady ? 'Room Active' : isPreparing ? 'Accepted (Preparing)' : 'Pending'}</span>
                             </span>
 
-                            <span className="text-[10px] text-slate-500 font-mono">{r.createdAt}</span>
+                            <span className="text-[10px] text-slate-500 font-mono shrink-0">{r.createdAt}</span>
                           </div>
 
-                          <div>
-                            <h4 className="text-white font-bold text-xs">{r.subject}</h4>
-                            <span className="text-[11px] text-indigo-300 block font-medium">
+                          <div className="min-w-0">
+                            <h4 className="text-white font-bold text-xs truncate">{r.subject}</h4>
+                            <span className="text-[11px] text-indigo-300 block font-medium truncate">
                               👨‍🏫 {r.teacherName}
                             </span>
                           </div>
 
                           <div className="p-2 rounded-lg bg-slate-900 border border-slate-800/80 text-[11px] text-slate-300">
                             <span className="text-slate-500 text-[10px] block">Specific Doubt:</span>
-                            <span className="line-clamp-2">{r.topic}</span>
+                            <span className="line-clamp-2 break-words">{r.topic}</span>
                           </div>
 
                           <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
-                            <Calendar className="w-3 h-3 text-slate-500" />
-                            <span>{r.time}</span>
+                            <Calendar className="w-3 h-3 text-slate-500 shrink-0" />
+                            <span className="truncate">{r.time}</span>
                           </div>
                         </div>
 
@@ -437,20 +433,19 @@ export default function StudentDashboard() {
               ) : (
                 <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {previousLearnings.map((item) => (
-                    <div key={item.id} className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
-                      <div className="flex justify-between items-center">
+                    <div key={item.id} className="min-w-0 p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
+                      <div className="flex justify-between items-center gap-2">
                         <span className="font-bold text-white text-xs truncate">{item.subject}</span>
-                        <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                        <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 shrink-0">
                           {item.duration}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-400 line-clamp-1">{item.topic}</p>
                       <div className="flex justify-between items-center text-[10px] text-slate-500 pt-1.5 border-t border-slate-900">
-                        <span>Mentor: {item.teacherName}</span>
-                        <span>{item.date}</span>
+                        <span className="truncate">Mentor: {item.teacherName}</span>
+                        <span className="shrink-0">{item.date}</span>
                       </div>
 
-                      {/* Download Notes Action if available */}
                       {(item.whiteboardNotes || item.codeNotes) && (
                         <div className="flex gap-2 pt-1 border-t border-slate-900">
                           {item.whiteboardNotes && (
@@ -476,9 +471,9 @@ export default function StudentDashboard() {
       </div>
 
       {/* 3. Search & Filters Bar */}
-      <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow-md">
+      <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow-md w-full min-w-0">
         <div className="grid md:grid-cols-12 gap-3 items-center">
-          <div className="md:col-span-7 relative">
+          <div className="md:col-span-7 relative min-w-0">
             <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
             <input 
               type="text" 
@@ -497,7 +492,7 @@ export default function StudentDashboard() {
             )}
           </div>
 
-          <div className="md:col-span-5 relative">
+          <div className="md:col-span-5 relative min-w-0">
             <div className="relative">
               <Users className="w-4 h-4 text-indigo-400 absolute left-3 top-3 pointer-events-none" />
               <select
@@ -508,7 +503,7 @@ export default function StudentDashboard() {
                 <option value="ALL">All Available Mentors ({availableTeachers.length})</option>
                 {availableTeachers.map((teacher) => (
                   <option key={teacher.id} value={teacher.id}>
-                    {teacher.isOnline ? '🟢' : '⚪'} {teacher.name}
+                    {teacher.name}
                   </option>
                 ))}
               </select>
@@ -518,19 +513,7 @@ export default function StudentDashboard() {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/60 text-xs">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setOnlyOnlineTeachers(!onlyOnlineTeachers)}
-              className={`px-3 py-1.5 rounded-lg border font-medium flex items-center gap-1.5 transition ${
-                onlyOnlineTeachers 
-                  ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400' 
-                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-              }`}
-            >
-              {onlyOnlineTeachers ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-              <span>{onlyOnlineTeachers ? '✓ Online Mentors Only' : 'Show Online Only'}</span>
-            </button>
-
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setOnlyFree(!onlyFree)}
               className={`px-3 py-1.5 rounded-lg border font-medium flex items-center gap-1.5 transition ${
@@ -544,12 +527,11 @@ export default function StudentDashboard() {
             </button>
           </div>
 
-          {(searchQuery || selectedTeacherId !== 'ALL' || onlyOnlineTeachers || onlyFree) && (
+          {(searchQuery || selectedTeacherId !== 'ALL' || onlyFree) && (
             <button
               onClick={() => {
                 setSearchQuery('');
                 setSelectedTeacherId('ALL');
-                setOnlyOnlineTeachers(false);
                 setOnlyFree(false);
               }}
               className="text-slate-500 hover:text-rose-400 text-xs flex items-center gap-1 transition"
@@ -562,10 +544,10 @@ export default function StudentDashboard() {
       </div>
 
       {/* 4. Courses Grid */}
-      <div className="space-y-4">
+      <div className="space-y-4 w-full min-w-0">
         <div className="flex justify-between items-center">
           <h3 className="font-semibold text-sm text-slate-300 uppercase tracking-wider flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-indigo-400" />
+            <BookOpen className="w-4 h-4 text-indigo-400 shrink-0" />
             <span>Matched Offerings & Mentors ({filteredCourses.length})</span>
           </h3>
         </div>
@@ -584,7 +566,7 @@ export default function StudentDashboard() {
             </p>
           </div>
         ) : (
-          <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4 w-full min-w-0">
             {filteredCourses.map((course) => (
               <TutorCard 
                 key={course.id}
